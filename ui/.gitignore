@@ -1,3 +1,14 @@
 node_modules
 dist
 .vite
+
+# pnpm approve-builds side-effect
+pnpm-workspace.yaml
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# tsc -b emits .d.ts + .js for referenced configs (vite.config.ts) which
+# we don't want in the repo — the .ts is the source of truth.
+vite.config.d.ts
+vite.config.js
