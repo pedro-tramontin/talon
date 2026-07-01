@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-bg-base text-slate-100 font-sans antialiased;
+    margin: 0;
+  }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb { @apply bg-slate-700 rounded; }
+  *::-webkit-scrollbar-track { @apply bg-bg-base; }
+}
