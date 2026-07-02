@@ -84,10 +84,14 @@ jobs:
   #     (dom_query, quick-xml) leaked into the runtime binary. This
   #     is the threat-model guarantee from ADR-0001 "Threat model".
   #
-  # The job does NOT need the UI build artifact; it only needs the
-  # lockfiles and source.
+  # The job depends on the `ui` job to get the UI dist artifact -- the
+  # `tauri::generate_context!()` proc macro in the app crate reads
+  # ui/dist/index.html at compile time and panics with a cryptic
+  # error if it's missing. Reusing the existing artifact avoids a
+  # duplicate pnpm install + build.
   supply-chain:
     name: Supply-chain audit
+    needs: [ui]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -106,6 +110,11 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Download UI dist
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
       - name: pnpm audit
         run: pnpm --dir ui audit --audit-level=moderate
       - name: cargo deny
