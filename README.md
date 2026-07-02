@@ -32,6 +32,7 @@ make clippy     # cargo clippy --workspace --all-targets -- -D warnings
 make test       # cargo test --workspace
 make audit      # pnpm audit + cargo deny check advisories (full tree)
 make audit-prod # pnpm audit --prod + cargo deny check advisories
+make audit-binary  # release-build + scan binary for build-time-only crate symbols (slow; CI-only)
 make clean      # cargo clean + rm -rf ui/dist ui/node_modules
 ```
 
@@ -43,7 +44,14 @@ The project enforces a blocking supply-chain audit on every PR and push to main.
 
 - `pnpm audit --audit-level=moderate` — fails on any JS advisory at moderate severity or above.
 - `cargo deny check advisories` — fails on any Rust advisory (with 18 known upstream-blocked ones in `deny.toml`'s `ignore` list).
+- `make audit-binary` (CI only) — builds the release binary unstripped and scans the symbol table to confirm `dom_query` and `quick-xml` (the two build-time-only DoS-reachable crates) have not leaked into the runtime binary. This is the threat-model guarantee from ADR-0001.
 - Dependabot opens weekly PRs for new npm and cargo versions (see `.github/dependabot.yml`).
+- A quarterly cron (`talon-gtk4-watchdog`) checks the Tauri and `urlpattern` release pages; when a release mentions GTK4 or `unic-*` migration, the user is alerted that the relevant `deny.toml` ignores can be removed.
+
+**Threat-model controls** (in `app/tauri.conf.json`):
+
+- A strict CSP that locks the webview to bundled assets only (`default-src 'self'`, plus explicit `base-uri 'none'`, `form-action 'none'`, `object-src 'none'`, `frame-ancestors 'none'`).
+- The webview is created with `WebviewUrl::App(...)` (the Tauri 2 default for `tauri.conf.json`'s `build.frontendDist`), which means the only valid URL is the local file path to `index.html` in the bundled dist. No remote URL loading is possible without a code change.
 
 **Adding a new dependency?**
 

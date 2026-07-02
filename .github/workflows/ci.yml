@@ -75,11 +75,14 @@ jobs:
           retention-days: 1
 
   # Supply-chain audit. See docs/adr/0001-supply-chain-monitoring.md.
-  # This job is a blocking check on every PR and push to main. It runs
-  # `make audit` which:
+  # This job is a blocking check on every PR and push to main. It runs:
   #   - pnpm audit --audit-level=moderate (full tree: prod + dev)
   #   - cargo deny check advisories (with the 18 upstream-blocked
   #     advisories in deny.toml's `ignore` list -- see ADR-0001)
+  #   - audit-binary: build the release binary unstripped and scan the
+  #     symbol table to confirm none of the build-time-only crates
+  #     (dom_query, quick-xml) leaked into the runtime binary. This
+  #     is the threat-model guarantee from ADR-0001 "Threat model".
   #
   # The job does NOT need the UI build artifact; it only needs the
   # lockfiles and source.
@@ -96,6 +99,13 @@ jobs:
           node-version: 20
           cache: pnpm
           cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Linux deps (for release build)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: pnpm audit
         run: pnpm --dir ui audit --audit-level=moderate
       - name: cargo deny
@@ -106,3 +116,5 @@ jobs:
           # to `cargo deny` itself, where `check advisories` is not valid
           # positional syntax.
           command-arguments: "advisories"
+      - name: audit-binary (release-build symbol scan)
+        run: make audit-binary

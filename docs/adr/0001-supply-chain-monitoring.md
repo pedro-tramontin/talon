@@ -4,6 +4,41 @@
 - **Date:** 2026-07-02
 - **Deciders:** Pedro Tramontin, Hermes
 
+## Threat model
+
+Before listing the policy, here is the explicit threat model that justifies the 18 `ignore` entries below. This section exists so a future security review can challenge the model — if it ever changes, the ignores may need to change with it.
+
+**The Tauri webview in Talon only ever renders one source of HTML/JS/CSS: the bundled `ui/dist/` directory that ships inside the Tauri binary.** Specifically:
+
+- The webview is created with `WebviewUrl::App(...)` (the Tauri 2 default for `tauri.conf.json`'s `build.frontendDist`), which means the webview's only valid URL is the local file path to `index.html` in the bundled dist. There is no path from Talon's UI to load a remote URL — doing so requires code change to use `WebviewUrl::External(...)`, which we never do.
+- The CSP in `app/tauri.conf.json` (`app.security.csp`) is enforced by the webview engine at runtime. The current policy: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:* http://localhost:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'`. The `connect-src` allows `localhost:*` for Vite HMR during development; in a release build the webview is bundled and the localhost sources are unused but still allow-listed for the dev case.
+- The 4 Tauri IPC channels are typed commands (`#[tauri::command]` Rust functions), and the only one that exists in phase 1 is `greet`, which returns a static string. None of the IPC commands parse untrusted HTML, XML, or URL patterns.
+- Talon does not have a feature that opens arbitrary URLs in the webview (e.g. a "preview this request" pane showing raw HTML from an HTTP response). When/if such a feature is added, this threat model changes and the `quick-xml`/`html5ever` `ignore` entries below need to be re-evaluated.
+
+**What the 18 advisories are actually about:**
+
+| Group | Crates | Where it runs | Reachable from user input in Talon? |
+|---|---|---|---|
+| gtk-rs GTK3 (×11) | atk, atk-sys, gdk, gdk-sys, gdkx11, gdkx11-sys, gdkwayland-sys, gtk, gtk-sys, gtk3-macros + proc-macro-error | `tao`, `wry`, `webkit2gtk-sys` (Tauri Linux windowing layer) | **No.** These run regardless of UI input. Unmaintained, not vulnerable. |
+| unic-* (×5) | unic-char-range, unic-char-property, unic-common, unic-ucd-ident, unic-ucd-version | `tauri-utils → urlpattern` (used internally by Tauri to parse URL patterns in our config at app load time) | **No.** Only at app startup, parsing our own `tauri.conf.json`. We don't accept user-supplied URL patterns. |
+| `quick-xml` (×2) | quick-xml 0.39.4 | `tauri → plist` (macOS bundle manifest writer, used at `tauri build --bundles app` time) | **No.** Build-time only, never reached at runtime. |
+| `html5ever` (×2) | (via `tauri-utils → dom_query`, used for icon extraction at `tauri build` time) | **No.** Build-time only. |
+
+**Conclusion:** the practical exploitability of any of the 18 advisories in Talon's current scope is **zero**. The `ignore` list is a forward-looking hygiene measure: we want the audit to fail the build the moment a fix exists upstream, but in the meantime, none of these are reachable from the application we ship. The CSP and the `WebviewUrl::App` default are the load-bearing controls that keep the threat model true — if either changes, this ADR must be re-evaluated.
+
+## Upstream tracking
+
+These are the upstream issues/PRs that would unblock each group of `ignore` entries. When any of them ships, remove the corresponding entries from `deny.toml` in a follow-up PR.
+
+| Group | Upstream | Status | Tracking |
+|---|---|---|---|
+| gtk-rs GTK3 (×11) | Tauri 2 GTK4 migration | In progress | https://github.com/tauri-apps/tauri/issues?q=is%3Aissue+gtk4 (search for the latest GTK4 tracking issue) |
+| unic-* (×5) | `urlpattern` dropping unmaintained unic-* (or inlining the tables) | Not started | (No public tracking issue as of 2026-07-02) |
+| `quick-xml` (×2) | `dtolnay/plist` bumping `quick-xml` to 0.41+ | Not started | (No public tracking issue; we are not opening the PR for now — see ADR-0001 re-evaluation trigger 6) |
+| `html5ever` (×2) | `tauri-utils` bumping `dom_query` past 0.27 | Not started | (Bundled into the same upstream conversation as unic-*) |
+
+A quarterly cron (`talon-gtk4-watchdog`, scheduled in the user's Hermes cron registry) polls the Tauri release notes and the `denoland/urlpattern` release page for any of the above. When one ships, the cron delivers a one-line report to the user's Matrix home channel; the user opens a follow-up PR to remove the relevant `ignore` entries.
+
 ## Context
 
 JavaScript and Rust ecosystems both have a history of supply-chain incidents:
@@ -119,6 +154,7 @@ This ADR should be re-evaluated when any of the following becomes true:
 3. `plist` ships a release that uses `quick-xml 0.41+` (→ 2 ignores become unnecessary).
 4. A new advisory appears that we **can** fix ourselves (e.g. a vuln in one of our direct deps).
 5. Talon's threat model changes to include parsing untrusted HTML/XML (the two `quick-xml` DoS advisories become first-class concerns).
+6. A future PR to `dtolnay/plist` lands (we are not opening it ourselves at this time per the user's preference; the `talon-gtk4-watchdog` cron only watches `tauri-apps/tauri` and `denoland/urlpattern` releases).
 
 When trigger 1, 2, or 3 fires, remove the corresponding `ignore` entries from `deny.toml` in a follow-up PR. When trigger 4 fires, update the affected direct dep. When trigger 5 fires, revisit the doS-class ignores with a fresh risk analysis.
 
