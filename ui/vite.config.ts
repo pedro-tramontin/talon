@@ -1,5 +1,8 @@
 /// <reference types="vitest" />
-import { defineConfig } from "vite";
+// Use vitest/config (not "vite") so the `test:` block is typed as vitest
+// config rather than as a vite-specific unknown field. Required for
+// vitest 3.x to suppress the "test field is not a vite option" warning.
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // Tauri expects the dev server on a fixed port and forwards HMR over IPC.
