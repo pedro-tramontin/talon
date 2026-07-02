@@ -1,0 +1,105 @@
+# cargo-deny configuration for Talon
+#
+# SCOPE: This file enforces the supply-chain advisory policy described in
+# `docs/adr/0001-supply-chain-monitoring.md` (ADR-0001). It blocks the
+# build on any advisory that has a known fix path, and explicitly
+# tolerates a curated set of advisories that are *upstream-blocked* --
+# i.e. they exist in transitive dependencies we do not own and the
+# upstream crate (Tauri, plist, GTK3-rs, etc.) has not shipped a fix.
+#
+# When an upstream crate ships a fix, the `ignore` entry becomes
+# unnecessary. cargo-deny will then re-surface the advisory and the CI
+# `supply-chain` job will fail. That's the goal: the moment a fix exists
+# upstream, we want to know.
+#
+# Sections `licenses`, `bans`, and `sources` are intentionally not
+# enabled. License policy and source restrictions are larger policy
+# decisions that deserve their own ADR. See ADR-0001 for the roadmap.
+
+[advisories]
+version = 2
+
+# Fail the build on any advisory at any severity. This includes
+# unmaintained-warnings, notices, and sound-unfixable items.
+#
+# IMPORTANT: When you add a new entry to `ignore` below, you MUST:
+#   1. Add a comment naming the upstream crate responsible.
+#   2. Add a comment naming the release that should remove the need
+#      for the ignore (e.g. "fixed in tauri-utils 2.10+", "removed
+#      at GTK4 migration").
+#   3. Reference the ADR-0001 in the comment.
+yanked = "warn"        # Warn on yanked crates but don't fail
+ignore = [
+    # ── gtk-rs GTK3 bindings (12 advisories) ────────────────────────
+    # The gtk-rs GTK3 bindings (atk, gdk, gtk, etc.) were archived in
+    # 2024 in favor of gtk4-rs. Tauri's Linux backend (tao, wry,
+    # webkit2gtk-sys) depends on these transitively. No fix is
+    # available until Tauri migrates to GTK4. Tracked by ADR-0001.
+    # https://github.com/gtk-rs/gtk3-rs/commit/508a69b63a3c5bf73790e0e59101a955847f30d6
+    "RUSTSEC-2024-0411", # gdkwayland-sys, fixed at Tauri GTK4 migration (ADR-0001)
+    "RUSTSEC-2024-0412", # gdk,          fixed at Tauri GTK4 migration (ADR-0001)
+    "RUSTSEC-2024-0413", # atk,          fixed at Tauri GTK4 migration (ADR-0001)
+    "RUSTSEC-2024-0414", # gdkx11-sys,   fixed at Tauri GTK4 migration (ADR-0001)
+    "RUSTSEC-2024-0415", # gtk,          fixed at Tauri GTK4 migration (ADR-0001)
+    "RUSTSEC-2024-0416", # atk-sys,      fixed at Tauri GTK4 migration (ADR-0001)
+    "RUSTSEC-2024-0417", # gdkx11,       fixed at Tauri GTK4 migration (ADR-0001)
+    "RUSTSEC-2024-0418", # gdk-sys,      fixed at Tauri GTK4 migration (ADR-0001)
+    "RUSTSEC-2024-0419", # gtk3-macros,  fixed at Tauri GTK4 migration (ADR-0001)
+    "RUSTSEC-2024-0420", # gtk-sys,      fixed at Tauri GTK4 migration (ADR-0001)
+    "RUSTSEC-2024-0370", # proc-macro-error, used by glib-macros; fixed at Tauri GTK4 migration (ADR-0001)
+
+    # ── unic-* family (5 advisories) ────────────────────────────────
+    # All Unicode crates from https://github.com/open-i18n/rust-unic
+    # are unmaintained. They reach us via tauri-utils → urlpattern.
+    # urlpattern is currently published at v0.3.0 and pinned; no fix
+    # is available until tauri-utils bumps to a urlpattern that
+    # either inlines the Unicode tables or uses unicode-* crates.
+    # Tracked by ADR-0001.
+    "RUSTSEC-2025-0075", # unic-char-range,    fixed when tauri-utils bumps urlpattern past unmaintained unic-* (ADR-0001)
+    "RUSTSEC-2025-0080", # unic-common,        fixed when tauri-utils bumps urlpattern past unmaintained unic-* (ADR-0001)
+    "RUSTSEC-2025-0081", # unic-char-property, fixed when tauri-utils bumps urlpattern past unmaintained unic-* (ADR-0001)
+    "RUSTSEC-2025-0098", # unic-ucd-version,   fixed when tauri-utils bumps urlpattern past unmaintained unic-* (ADR-0001)
+    "RUSTSEC-2025-0100", # unic-ucd-ident,     fixed when tauri-utils bumps urlpattern past unmaintained unic-* (ADR-0001)
+
+    # ── quick-xml (2 advisories) ───────────────────────────────────
+    # Two DoS advisories in quick-xml 0.39.x. Fixed in 0.41.0, but
+    # `plist 1.9.0` (used by Tauri for macOS bundle manifests) pins
+    # `quick-xml = "^0.39.2"`. We need plist to either drop the pin
+    # or release a version that uses quick-xml 0.41+. Both advisories
+    # are DoS-class: they require a malicious XML payload, and our
+    # app does not parse untrusted XML in normal operation. Tracked
+    # by ADR-0001.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0194
+    # https://rustsec.org/advisories/RUSTSEC-2026-0195
+    "RUSTSEC-2026-0194", # quick-xml DoS via duplicate attribute names; fixed when plist 1.10+ ships (ADR-0001)
+    "RUSTSEC-2026-0195", # quick-xml DoS via unbounded namespace declarations; fixed when plist 1.10+ ships (ADR-0001)
+]
+
+# [licenses]            # Uncomment + configure to enforce license policy
+# version = 2
+# allow = [
+#   "Apache-2.0",
+#   "Apache-2.0 WITH LLVM-exception",
+#   "MIT",
+#   "BSD-2-Clause",
+#   "BSD-3-Clause",
+#   "ISC",
+#   "Unicode-DFS-2016",
+#   "Unicode-3.0",
+#   "Zlib",
+#   "0BSD",
+#   "CC0-1.0",
+#   "MPL-2.0",
+# ]
+# confidence-threshold = 0.8
+
+# [bans]                # Uncomment to ban specific crates or duplicates
+# multiple-versions = "warn"
+# wildcards = "deny"
+# deny = []
+
+# [sources]             # Uncomment to restrict registry sources
+# unknown-registry = "deny"
+# unknown-git = "deny"
+# allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# allow-git = []

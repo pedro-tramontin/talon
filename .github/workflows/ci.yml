@@ -6,13 +6,17 @@ on:
   pull_request:
 
 # Cross-language build orchestration lives in the Makefile at the
-# repo root. CI invokes the same `make fmt`, `make clippy`, `make test`
-# targets that local devs use, so there's a single source of truth for
-# the actual cargo invocations. The only workflow-specific step is
-# passing the UI dist between the `ui` job (which builds it with
-# pnpm) and the `rust` jobs (which consume it) via a workflow
-# artifact -- `needs: [ui]` is for ordering only and does NOT share
-# the filesystem.
+# repo root. CI invokes the same `make fmt`, `make clippy`, `make test`,
+# `make audit` targets that local devs use, so there's a single source
+# of truth for the actual cargo/pnpm invocations. The only
+# workflow-specific step is passing the UI dist between the `ui` job
+# (which builds it with pnpm) and the `rust` jobs (which consume it)
+# via a workflow artifact -- `needs: [ui]` is for ordering only and
+# does NOT share the filesystem.
+#
+# Supply-chain policy lives in docs/adr/0001-supply-chain-monitoring.md.
+# The `supply-chain` job is a blocking check that runs `make audit`
+# (pnpm audit + cargo deny) on every PR. New advisories fail the build.
 jobs:
   rust:
     name: Rust (${{ matrix.os }})
@@ -69,3 +73,32 @@ jobs:
           path: ui/dist
           if-no-files-found: error
           retention-days: 1
+
+  # Supply-chain audit. See docs/adr/0001-supply-chain-monitoring.md.
+  # This job is a blocking check on every PR and push to main. It runs
+  # `make audit` which:
+  #   - pnpm audit --audit-level=moderate (full tree: prod + dev)
+  #   - cargo deny check advisories (with the 18 upstream-blocked
+  #     advisories in deny.toml's `ignore` list -- see ADR-0001)
+  #
+  # The job does NOT need the UI build artifact; it only needs the
+  # lockfiles and source.
+  supply-chain:
+    name: Supply-chain audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: pnpm audit
+        run: pnpm --dir ui audit --audit-level=moderate
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          arguments: check advisories
