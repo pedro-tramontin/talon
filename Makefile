@@ -1,0 +1,60 @@
+# Talon Makefile
+#
+# Build orchestration for the Talon workspace. Cargo handles the Rust
+# side; this Makefile handles the cross-language bits (building the UI
+# before cargo) and gives a single entry point for the common commands
+# developers and CI both invoke.
+#
+# Usage:
+#   make build-ui   # build the React UI (ui/dist/) -- required before cargo check
+#   make ci        # the full local pipeline: build-ui + fmt + clippy + test
+#   make fmt       # cargo fmt --all -- --check
+#   make clippy    # cargo clippy --workspace --all-targets -- -D warnings
+#   make test      # cargo test --workspace
+#
+# CI uses the same `make fmt`, `make clippy`, `make test` targets from
+# .github/workflows/ci.yml, but the rust job downloads the UI dist as
+# a workflow artifact instead of running `make build-ui` (pnpm is not
+# installed in the rust job's runner; the UI job does the pnpm build
+# and uploads the result).
+
+.PHONY: help build-ui fmt clippy test ci clean
+
+# Default target: print help.
+help:
+	@echo "Talon build targets:"
+	@echo "  make build-ui   Build the React UI (ui/dist/)"
+	@echo "  make ci         Full local pipeline: build-ui + fmt + clippy + test"
+	@echo "  make fmt        cargo fmt --all -- --check"
+	@echo "  make clippy     cargo clippy --workspace --all-targets -- -D warnings"
+	@echo "  make test       cargo test --workspace"
+	@echo "  make clean      cargo clean + rm -rf ui/dist ui/node_modules"
+
+# Build the React UI. Required before any cargo command that triggers
+# the app crate's tauri::generate_context!() macro (i.e. cargo check /
+# clippy / test / build). The macro reads ui/dist/index.html at
+# expansion time and panics with a cryptic error if it's missing.
+build-ui:
+	cd ui && pnpm install --frozen-lockfile && pnpm build
+
+# Rust-side checks. Each is a thin wrapper around cargo so that the
+# local Makefile and the CI workflow call identical commands.
+fmt:
+	cargo fmt --all -- --check
+
+clippy:
+	cargo clippy --workspace --all-targets -- -D warnings
+
+test:
+	cargo test --workspace
+
+# The full local pipeline. `make ci` is the command new contributors
+# should run before opening a PR; it's also the contract that the
+# CI workflow validates.
+ci: build-ui fmt clippy test
+
+# Convenience: nuke the build artifacts. Useful when switching branches
+# or debugging stale build script state.
+clean:
+	cargo clean
+	rm -rf ui/dist ui/node_modules

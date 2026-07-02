@@ -5,16 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+# Cross-language build orchestration lives in the Makefile at the
+# repo root. CI invokes the same `make fmt`, `make clippy`, `make test`
+# targets that local devs use, so there's a single source of truth for
+# the actual cargo invocations. The only workflow-specific step is
+# passing the UI dist between the `ui` job (which builds it with
+# pnpm) and the `rust` jobs (which consume it) via a workflow
+# artifact -- `needs: [ui]` is for ordering only and does NOT share
+# the filesystem.
 jobs:
   rust:
     name: Rust (${{ matrix.os }})
-    # The app crate's tauri::generate_context!() proc macro reads
-    # ../ui/dist at expansion time and panics if it's missing. The
-    # UI job builds the dist and uploads it as a workflow artifact;
-    # this job downloads the artifact before any cargo command runs.
-    # (Note: `needs: [ui]` is for ordering only -- it does NOT share
-    # the filesystem between jobs. The artifact pass is the only way
-    # to get the dist from the UI VM to the Rust VMs.)
     needs: [ui]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -39,11 +40,11 @@ jobs:
           name: ui-dist
           path: ui/dist
       - name: fmt
-        run: cargo fmt --all -- --check
+        run: make fmt
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: make clippy
       - name: test
-        run: cargo test --workspace
+        run: make test
 
   ui:
     name: UI
