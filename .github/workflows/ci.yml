@@ -101,4 +101,8 @@ jobs:
       - name: cargo deny
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          arguments: check advisories
+          # `command-arguments` is forwarded to the cargo-deny subcommand
+          # (i.e. after `cargo deny`). The `arguments` field would be passed
+          # to `cargo deny` itself, where `check advisories` is not valid
+          # positional syntax.
+          command-arguments: "advisories"
