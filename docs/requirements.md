@@ -5,8 +5,8 @@ The minimum toolchain needed to build and run Talon from source.
 ## Core
 
 - **Rust ≥ 1.78** (`rustup update stable`)
-- **Node ≥ 20**
-- **pnpm ≥ 9** (`npm i -g pnpm`)
+- **Node ≥ 22.13** (required by pnpm 11; LTS recommended)
+- **pnpm ≥ 11** (`npm i -g pnpm` or via Corepack)
 - **Tauri CLI 2.x** (`cargo install tauri-cli --version "^2.0" --locked`)
 
 ## Linux extra packages (Debian/Ubuntu)
@@ -40,7 +40,7 @@ sudo apt install -y xvfb
 ```bash
 rustc --version   # expect 1.78 or newer
 cargo --version
-node --version    # expect v20 or newer
-pnpm --version    # expect 9 or newer
+node --version    # expect v22.13 or newer
+pnpm --version    # expect 11 or newer
 cargo tauri --version   # expect 2.x after install
 ```

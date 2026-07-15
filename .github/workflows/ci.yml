@@ -59,11 +59,13 @@ jobs:
         with:
           # pnpm 11.x is required because npm retired the legacy audit
           # endpoint in 2026, and pnpm only added the bulk-endpoint
-          # replacement in 11.x. See docs/dependency-upgrade-plan.md.
+          # replacement in 11.x. pnpm 11 requires Node >= 22.13.
+          # See docs/dependency-upgrade-plan.md.
           version: 11
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22 (current LTS) — required by pnpm 11.
+          node-version: 22
           cache: pnpm
           cache-dependency-path: ui/pnpm-lock.yaml
       - run: pnpm --dir ui install --frozen-lockfile
@@ -102,11 +104,13 @@ jobs:
         with:
           # pnpm 11.x is required because npm retired the legacy audit
           # endpoint in 2026, and pnpm only added the bulk-endpoint
-          # replacement in 11.x. See docs/dependency-upgrade-plan.md.
+          # replacement in 11.x. pnpm 11 requires Node >= 22.13.
+          # See docs/dependency-upgrade-plan.md.
           version: 11
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22 (current LTS) — required by pnpm 11.
+          node-version: 22
           cache: pnpm
           cache-dependency-path: ui/pnpm-lock.yaml
       - name: Linux deps (for release build)

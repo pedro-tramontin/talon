@@ -98,6 +98,16 @@ These are major-version bumps that need **config-file or code changes** in the r
 > `eslint 9.36.0 → 9.39.x`) are within the major ranges already pinned.
 > CI workflow `.github/workflows/ci.yml` updated: `version: 9` → `version: 11`
 > in both the `ui` and `supply-chain` jobs.
+>
+> **Cascading bump: Node 20 → 22.** pnpm 11.x's `engines` field requires
+> `node >= 22.13.0`. The CI workflow pinned `node-version: 20`, so the
+> `pnpm install` step failed with `ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite`
+> (pnpm 11 uses sqlite for store metadata, which Node 20 doesn't ship).
+> Fix: bump `node-version: 20` → `node-version: 22` (current LTS) in both
+> the `ui` and `supply-chain` jobs, and update the `engines.node` /
+> `engines.pnpm` fields in `ui/package.json` to match. Node 22 also
+> silences the upstream deprecation warning that GitHub's runners have
+> been printing ("Node 20 is being deprecated").
 
 ## Phase 3+ — Dependabot + the watchdog
 
