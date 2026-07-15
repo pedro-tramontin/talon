@@ -28,6 +28,9 @@ pub enum StoreError {
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 
+    #[error("uuid error: {0}")]
+    Uuid(#[from] uuid::Error),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

@@ -10,6 +10,7 @@ pub mod exchanges;
 pub mod fts;
 pub mod migrations;
 pub mod schema;
+pub mod tags;
 
 pub use db::{open, project_path, DbPool};
 pub use error::{Result, StoreError};
