@@ -170,12 +170,19 @@ mod tests {
     // Tauri command layer thin and lets the test suite cover the
     // wrappers directly.
     //
-    // All 6 methods are simple pass-throughs to bk_store, but they
-    // each have the same project-open invariant the existing methods
-    // enforce (ProjectNotOpen if the project isn't open). The tests
-    // below cover both the happy path and the invariant.
+    // The 6 plan-listed methods are: `delete_exchange`, `update_notes`,
+    // `set_starred`, `tag_attach`, `tag_detach`, `list_tags`. The
+    // implementation added 2 more that the plan didn't enumerate
+    // separately but that the tag UX needs: `tag_upsert` (create or
+    // fetch a tag by name) and `list_tags_for_exchange` (which tags
+    // are on this exchange). All 8 are simple pass-throughs to bk_store
+    // but each enforces the project-open invariant (ProjectNotOpen
+    // if the project isn't open). The tests below cover both the
+    // happy path and the invariant.
 
-    /// `set_starred` toggles the flag and persists across restart.
+    /// `set_starred` toggles the flag in-session; persistence across
+    /// restart is exercised by the full `engine_persists_across_restart`
+    /// smoke test above (which inserts + mutates + reopens).
     #[test]
     fn engine_set_starred_toggles_persist() {
         let tmp = TempDir::new().unwrap();
@@ -197,6 +204,20 @@ mod tests {
         engine.set_starred(project_id, id, false).unwrap();
         let back = engine.get_exchange(project_id, id).unwrap().unwrap();
         assert!(!back.meta.starred, "not starred after set_starred(false)");
+
+        // Round-trip across an engine restart: the star flag (and
+        // unstar, in the other direction) must survive SQLite close+reopen.
+        // Without this, the test name's "persists" suffix would be
+        // a lie (Copilot's review comment #3 on PR #15 flagged this).
+        drop(engine);
+        let engine2 = Engine::new(tmp.path()).unwrap();
+        engine2.open_project(&project).unwrap();
+        engine2.set_starred(project_id, id, true).unwrap();
+        drop(engine2);
+        let engine3 = Engine::new(tmp.path()).unwrap();
+        engine3.open_project(&project).unwrap();
+        let back = engine3.get_exchange(project_id, id).unwrap().unwrap();
+        assert!(back.meta.starred, "starred flag persisted across restart");
     }
 
     /// `update_notes` persists notes and keeps the FTS5 index in sync
@@ -326,7 +347,9 @@ mod tests {
 
     /// The project-open invariant: every method on a closed project
     /// returns `ProjectNotOpen`. The existing `insert_into_non_open_project_errors`
-    /// covers `insert_exchange`; this test covers the 6 new methods.
+    /// covers `insert_exchange`; this test covers the 8 new methods
+    /// (delete_exchange, update_notes, set_starred, tag_upsert, list_tags,
+    /// list_tags_for_exchange, tag_attach, tag_detach).
     #[test]
     fn engine_methods_error_on_non_open_project() {
         let tmp = TempDir::new().unwrap();

@@ -191,11 +191,24 @@ impl Engine {
         bk_store::tags::list_for_exchange(&pool, exchange_id).map_err(Into::into)
     }
 
-    /// Attach a tag to an exchange. Idempotent. The `bk_store::tags::attach`
-    /// function also enforces the cross-project invariant (the tag
-    /// must belong to the same project as the exchange) -- this
-    /// happens transparently because `bk_store::tags::attach` uses
-    /// an `INSERT ... SELECT WHERE EXISTS` with a project_id JOIN.
+    /// Attach a tag to an exchange. Idempotent (no-op if already attached).
+    ///
+    /// **No cross-project check at this layer.** `bk_store::tags::attach`
+    /// is a plain `INSERT OR IGNORE INTO exchange_tags (exchange_id, tag_id)`
+    /// — the engine passes the `tag_id` and `exchange_id` straight through
+    /// without verifying they belong to the same project as the
+    /// `project_id` we used to look up the pool. In normal usage the UI
+    /// only ever passes a `tag_id` it got from `list_tags(project_id)`
+    /// and an `exchange_id` from `list_recent(project_id, ...)`, so both
+    /// will be from the same project and the invariant holds by
+    /// construction. If we ever want to enforce it at the engine
+    /// layer, the right place is a single SQL check before the
+    /// `INSERT` in `bk_store::tags::attach` — e.g.
+    /// `INSERT ... SELECT WHERE EXISTS (SELECT 1 FROM tags t, exchanges e
+    /// WHERE t.id = ?1 AND e.id = ?2 AND t.project_id = e.project_id)`.
+    /// That should be a separate PR; not bundled into this engine-wrapper
+    /// change. (Copilot's review comment #5 on PR #15 flagged the
+    /// earlier version of this comment for overpromising the invariant.)
     pub fn tag_attach(
         &self,
         project_id: ProjectId,
