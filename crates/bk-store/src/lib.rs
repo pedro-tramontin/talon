@@ -6,6 +6,8 @@
 
 pub mod db;
 pub mod error;
+pub mod exchanges;
+pub mod fts;
 pub mod migrations;
 pub mod schema;
 

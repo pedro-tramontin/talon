@@ -83,18 +83,19 @@ impl<T> FromStr for Id<T> {
 // the impl, and we want `Id<Project> == Id<Project>` to work without
 // the caller having to thread bounds manually.
 //
-// `Clone` is required for the same reason: any `#[derive(Clone)]` on
-// a containing struct (e.g. `Request`, `ExchangeMeta`) propagates a
-// `T: Clone` bound to `Id<T>`. These are zero-sized so `Clone` is free.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// `Clone + Copy` are required for the same reason: any `#[derive(Clone)]`
+// or `#[derive(Copy)]` on a containing struct (e.g. `Request`,
+// `ExchangeMeta`) propagates a `T: Clone` or `T: Copy` bound to
+// `Id<T>`. These are zero-sized so `Clone` and `Copy` are free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Project;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Exchange;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tag;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Note;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FuzzJob;
 
 pub type ProjectId = Id<Project>;
