@@ -12,9 +12,22 @@
 # `supply-chain` job will fail. That's the goal: the moment a fix exists
 # upstream, we want to know.
 #
-# Sections `licenses`, `bans`, and `sources` are intentionally not
-# enabled. License policy and source restrictions are larger policy
-# decisions that deserve their own ADR. See ADR-0001 for the roadmap.
+# The `[licenses]` section below is an allow list of every license
+# currently encountered in the dependency tree. Most are OSI-approved
+# permissive (MIT, Apache-2.0, BSD-3-Clause, Zlib, 0BSD, CC0-1.0,
+# MIT-0, Unlicense). A few are weak copyleft or public-domain
+# (MPL-2.0, LGPL-2.1-or-later) — those are allowed because they
+# come from transitive deps we don't own (Tauri's webview2-com and
+# libdbus-sys respectively). The list is intended to be the
+# minimum-viable set: each entry corresponds to a real crate in
+# the tree, and removing an entry causes a real `cargo deny check
+# licenses` failure. When a transitive dep is dropped upstream,
+# remove the corresponding entry.
+#
+# Note: the `supply-chain` CI job does NOT run `cargo deny check licenses`
+# (it runs `advisories` only, per the Makefile); this section is a
+# local-only guard. If you want to enforce licenses in CI, add a step
+# that runs `cargo deny check licenses` to the supply-chain job.
 
 [advisories]
 version = 2
@@ -75,23 +88,59 @@ ignore = [
     "RUSTSEC-2026-0195", # quick-xml DoS via unbounded namespace declarations; fixed when plist 1.10+ ships (ADR-0001)
 ]
 
-# [licenses]            # Uncomment + configure to enforce license policy
-# version = 2
-# allow = [
-#   "Apache-2.0",
-#   "Apache-2.0 WITH LLVM-exception",
-#   "MIT",
-#   "BSD-2-Clause",
-#   "BSD-3-Clause",
-#   "ISC",
-#   "Unicode-DFS-2016",
-#   "Unicode-3.0",
-#   "Zlib",
-#   "0BSD",
-#   "CC0-1.0",
-#   "MPL-2.0",
-# ]
-# confidence-threshold = 0.8
+# [licenses]
+# License policy. We allow the standard set of OSI-approved permissive
+# licenses plus a few that are common in transitive dependencies. Each
+# entry is the SPDX identifier as cargo-deny normalizes it.
+#
+# When you add a new license, add a comment explaining what crate needs
+# it and whether it's transitive or direct. If a transitive dep uses a
+# license that downstream projects routinely allow (e.g. MPL-2.0 for
+# `webview2-com` via Tauri), include a note about why.
+#
+# The list below was assembled by running `cargo deny check licenses`
+# and adding every normalized SPDX identifier that appeared. To
+# regenerate, run `cargo deny check licenses 2>&1 | grep -oE '"[A-Z][A-Za-z0-9.+-]*"' | sort -u`.
+[licenses]
+version = 2
+allow = [
+  "MIT",                       # most Rust crates; both direct and transitive
+  "Apache-2.0",                # most Rust crates; both direct and transitive
+  "Apache-2.0 WITH LLVM-exception",  # wasi, some LLVM crates
+  "BSD-3-Clause",              # some transitive deps
+  "Unicode-3.0",               # some ICU-adjacent transitive deps
+  "Zlib",                      # some transitive deps (e.g. libpng-sys)
+  "0BSD",                      # adler2, some transitive deps
+  "CC0-1.0",                   # some transitive deps
+  "MIT-0",                     # some transitive deps
+  "MPL-2.0",                   # webview2-com via Tauri
+  "Unlicense",                 # aho-corasick
+  "LGPL-2.1-or-later",         # libdbus-sys via Tauri
+]
+# When you add a new license, add a comment naming the crate that
+# needs it and whether it's direct or transitive. If the allow list
+# has an entry that no current dep uses, `cargo deny check licenses`
+# will emit a `license-not-encountered` warning -- that's a signal to
+# either remove the unused entry (preferred) or add a comment
+# explaining why we expect it to appear (e.g. for a build-dependency
+# cargo-deny's default tree doesn't traverse).
+#
+# To regenerate the list (run after a `cargo update` or a Tauri
+# release that adds/removes transitive deps), see what cargo-deny
+# now considers "encountered" by parsing its `errors[rejected]`
+# blocks -- the license identifier is the quoted string on the
+# `license = "..."` line:
+#   cargo deny check licenses 2>&1 \
+#     | grep -E 'license = "' \
+#     | sed -E 's/.*license = "([^"]+)".*/\1/' \
+#     | sort -u
+# Then dedupe compound SPDX expressions to their component identifiers
+# (e.g. "MIT OR Apache-2.0" -> add both "MIT" and "Apache-2.0")
+# before adding to the allow list. The simpler regex used in the
+# earlier draft of this comment (`[A-Z]...`) silently dropped entries
+# like `0BSD` (digit-leading) and `Apache-2.0 WITH LLVM-exception`
+# (contains spaces).
+confidence-threshold = 0.8
 
 # [bans]                # Uncomment to ban specific crates or duplicates
 # multiple-versions = "warn"
