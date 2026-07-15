@@ -95,15 +95,45 @@ pub fn list_recent(pool: &DbPool, project_id: ProjectId, limit: u32) -> Result<V
 
 /// Update the free-form notes on an exchange. Used by the right-rail
 /// notes editor in the UI.
+///
+/// The FTS5 index also stores `notes` (see `exchange_fts` schema and
+/// `fts::index_exchange`), so the FTS row must be kept in sync in the
+/// **same transaction** as the UPDATE — otherwise search results go
+/// stale (the old notes remain searchable; the new notes won't match).
+///
+/// With internal-content FTS5 (migration 002), the sync is
+/// straightforward: `index_exchange` uses `REPLACE INTO`, so we can
+/// just re-call it after the UPDATE with the post-UPDATE exchange
+/// (which has the new notes) and the old FTS row is replaced
+/// atomically inside the same transaction.
 pub fn update_notes(pool: &DbPool, id: ExchangeId, notes: &str) -> Result<()> {
-    let conn = pool.get()?;
-    let n = conn.execute(
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    // 1) Update the row.
+    let n = tx.execute(
         "UPDATE exchanges SET notes = ?1 WHERE id = ?2",
         params![notes, id.to_string()],
     )?;
     if n == 0 {
         return Err(StoreError::NotFound(id.to_string()));
     }
+    // 2) Re-fetch the exchange so `index_exchange` sees the post-UPDATE
+    //    notes, and re-index. The re-fetch is cheaper than asking the
+    //    caller to pass the full `HttpExchange` (they may not have it
+    //    — the notes editor just edits one field).
+    let exchange = tx
+        .query_row(
+            r#"SELECT id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json
+               FROM exchanges WHERE id = ?1"#,
+            params![id.to_string()],
+            row_to_exchange,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound(id.to_string()),
+            other => StoreError::Sqlite(other),
+        })?;
+    crate::fts::index_exchange(&tx, &exchange)?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -121,12 +151,9 @@ pub fn set_starred(pool: &DbPool, id: ExchangeId, starred: bool) -> Result<()> {
 }
 
 /// Delete an exchange. The `ON DELETE CASCADE` on `exchange_tags` cleans
-/// up tag joins. The FTS5 row uses the exchange's rowid, which we look
-/// up before the row is gone.
-///
-/// **FTS5 contentless tables can't be DELETEd from** — the documented
-/// idiom is to insert a `delete` command row with all columns blanked.
-/// See <https://www.sqlite.org/fts5.html#the_delete_command>.
+/// up tag joins. With internal-content FTS5 (migration 002), we can
+/// use a plain `DELETE FROM exchange_fts WHERE rowid = ?` instead of
+/// the FTS5 'delete' command (which was a no-op for contentless tables).
 pub fn delete(pool: &DbPool, id: ExchangeId) -> Result<()> {
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
@@ -138,17 +165,7 @@ pub fn delete(pool: &DbPool, id: ExchangeId) -> Result<()> {
         )
         .optional()?;
     if let Some(r) = rowid {
-        // FTS5 'delete' command: insert a row with the special value
-        // 'delete' in the FTS5 control column and empty strings for
-        // each indexed column. The exchange_fts table has 7 indexed
-        // columns: url, method, request_headers, response_headers,
-        // request_body, response_body, notes.
-        tx.execute(
-            r#"INSERT INTO exchange_fts
-                (exchange_fts, rowid, url, method, request_headers, response_headers, request_body, response_body, notes)
-               VALUES ('delete', ?1, '', '', '', '', '', '', '')"#,
-            params![r],
-        )?;
+        tx.execute("DELETE FROM exchange_fts WHERE rowid = ?1", params![r])?;
     }
     tx.execute(
         "DELETE FROM exchanges WHERE id = ?1",
@@ -358,6 +375,42 @@ mod tests {
         update_notes(&pool, id, "found the admin endpoint").unwrap();
         let back = get(&pool, id).unwrap().unwrap();
         assert_eq!(back.meta.notes, "found the admin endpoint");
+    }
+
+    /// Regression: the previous `update_notes` did not reindex the FTS5
+    /// row, so search kept returning matches for the *old* notes and
+    /// missed matches for the *new* notes. The fix reindexes inside
+    /// the same transaction as the UPDATE (via `index_exchange`, which
+    /// uses `REPLACE INTO` on the internal-content FTS5 table from
+    /// migration 002).
+    #[test]
+    fn update_notes_reindexes_fts() {
+        let (_tmp, pool) = fresh_pool();
+        let project_id = ProjectId::new();
+        insert_project_row(&pool, project_id);
+        let id = insert(&pool, &make_exchange(project_id, "/x")).unwrap();
+
+        // Step 1: a token unique to the OLD notes is searchable.
+        update_notes(&pool, id, "vulnerable to SQLi").unwrap();
+        let old = crate::fts::search(&pool, project_id, "SQLi", 10).unwrap();
+        assert_eq!(old.len(), 1, "old notes token must be searchable");
+
+        // Step 2: update the notes to something completely different.
+        update_notes(&pool, id, "reviewed and closed").unwrap();
+
+        // Step 3: the OLD token is no longer searchable, the NEW token is.
+        let old_after = crate::fts::search(&pool, project_id, "SQLi", 10).unwrap();
+        assert_eq!(
+            old_after.len(),
+            0,
+            "old notes token must NOT match after update_notes"
+        );
+        let new_after = crate::fts::search(&pool, project_id, "reviewed", 10).unwrap();
+        assert_eq!(
+            new_after.len(),
+            1,
+            "new notes token must be searchable after update_notes"
+        );
     }
 
     #[test]

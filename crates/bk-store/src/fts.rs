@@ -1,10 +1,17 @@
 //! FTS5 full-text search over exchanges.
 //!
-//! The `exchange_fts` table is a *contentless* FTS5 table: we own the
-//! row IDs (we use the `exchanges.rowid` directly) and we feed it
-//! rows explicitly via `index_exchange`. There are no triggers; the
-//! exchanges module is responsible for keeping this in sync via the
-//! `Transaction` passed in.
+//! The `exchange_fts` table is an **internal-content** FTS5 virtual
+//! table (migration 002 dropped the original contentless variant —
+//! that one had a fundamental issue where the FTS5 'delete' command
+//! didn't actually remove entries from the inverted index, making
+//! `update_notes` leave the search results stale). The FTS table now
+//! stores the indexed columns directly, so we can use `REPLACE INTO`
+//! (in `index_exchange`) and `DELETE FROM` (in `rebuild` and
+//! `exchanges::delete`) to keep the index in sync.
+//!
+//! The exchanges module is responsible for calling `index_exchange`
+//! inside the same transaction as every `exchanges` write (insert,
+//! update). If the FTS write fails, the whole exchange write rolls back.
 //!
 //! Indexed fields:
 //!   - url              (request URL, string)
@@ -26,13 +33,20 @@ use crate::DbPool;
 use bk_core::{HttpExchange, ProjectId};
 use rusqlite::params;
 
-/// Index a single exchange. Called from `exchanges::insert` inside the
-/// same transaction. No-op for exchanges with no URL or with a body
-/// that fails to UTF-8 decode (FTS5 will still index what it can).
+/// Index a single exchange. Called from `exchanges::insert` and
+/// `exchanges::update_notes` inside the same transaction. Uses
+/// `REPLACE INTO` (internal-content FTS5, migration 002) so it's
+/// idempotent: a fresh rowid inserts, an existing rowid replaces.
+///
+/// Bodies are decoded with `String::from_utf8_lossy` — invalid UTF-8
+/// bytes are replaced with U+FFFD, so indexing always proceeds
+/// (rather than bailing on a decode error). The lossy replacement
+/// is recorded in the FTS index and will match future searches the
+/// same way it matches the stored value.
 ///
 /// Takes a `&Transaction` (not `&Connection`) so the FTS write is
-/// part of the same atomic unit as the `exchanges` insert. If the
-/// FTS write fails, the whole insert rolls back.
+/// part of the same atomic unit as the `exchanges` insert/update.
+/// If the FTS write fails, the whole insert/update rolls back.
 pub fn index_exchange(conn: &rusqlite::Transaction<'_>, ex: &HttpExchange) -> Result<()> {
     let rowid: i64 = conn.query_row(
         "SELECT rowid FROM exchanges WHERE id = ?1",
@@ -54,8 +68,14 @@ pub fn index_exchange(conn: &rusqlite::Transaction<'_>, ex: &HttpExchange) -> Re
         .map(|r| body_to_string(&r.body))
         .unwrap_or_default();
 
+    // REPLACE INTO is idempotent: if a row with this rowid exists
+    // (from a prior insert or a previous index_exchange call), it's
+    // replaced; otherwise a new row is inserted. This is what makes
+    // `update_notes` work cleanly — we can just re-call
+    // `index_exchange` after the UPDATE without first issuing a
+    // 'delete' command. Requires internal-content FTS5 (migration 002).
     conn.execute(
-        r#"INSERT INTO exchange_fts
+        r#"REPLACE INTO exchange_fts
            (rowid, url, method, request_headers, response_headers, request_body, response_body, notes)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"#,
         rusqlite::params![
@@ -115,27 +135,21 @@ pub fn search(
 /// upgrade that adds a new indexed field, or as a recovery tool from
 /// a `talon repair-index <project>` CLI command.
 ///
-/// **FTS5 contentless tables can't be DELETEd from** — the rebuild
-/// walks all `exchanges` rows in the project and re-inserts them into
-/// the FTS table. Old rows are dropped via the FTS5 'delete' command
-/// (one per rowid) before the re-insert.
+/// With internal-content FTS5 (migration 002), this is straightforward:
+/// delete every FTS row in the project, then re-insert from the
+/// `exchanges` table.
 pub fn rebuild(pool: &DbPool, project_id: ProjectId) -> Result<usize> {
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
-    // Wipe this project's FTS rows via the FTS5 'delete' command.
-    // (Contentless tables don't support SQL DELETE.)
+    // Wipe this project's FTS rows. We need the rowids to filter by
+    // project, then delete by rowid.
     let mut existing = tx.prepare("SELECT rowid FROM exchanges WHERE project_id = ?1")?;
     let rowids: Vec<i64> = existing
         .query_map(params![project_id.to_string()], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     drop(existing);
     for rowid in &rowids {
-        tx.execute(
-            r#"INSERT INTO exchange_fts
-                (exchange_fts, rowid, url, method, request_headers, response_headers, request_body, response_body, notes)
-               VALUES ('delete', ?1, '', '', '', '', '', '', '')"#,
-            params![rowid],
-        )?;
+        tx.execute("DELETE FROM exchange_fts WHERE rowid = ?1", params![rowid])?;
     }
     // Re-insert from the exchanges table.
     let mut stmt = tx.prepare(
@@ -334,13 +348,9 @@ mod tests {
         let before = search(&pool, project_id, "alice OR bob OR carol", 10).unwrap();
         assert_eq!(before.len(), 3);
 
-        // Rebuild and re-query. The plan's original test tried to
-        // simulate a corrupt index by DELETEing from exchange_fts,
-        // but FTS5 contentless tables can't be DELETEd from with SQL
-        // DELETE. The 'delete' command inserts a tombstone that then
-        // conflicts with re-indexing. So this test just exercises
-        // the rebuild path on a healthy index — the FTS rowid
-        // bookkeeping is still exercised.
+        // Rebuild and re-query. With internal-content FTS5
+        // (migration 002), `rebuild` does DELETE + REPLACE for each
+        // row, so the post-rebuild search must find the same 3 hits.
         let count = rebuild(&pool, project_id).unwrap();
         assert_eq!(count, 3);
 

@@ -12,7 +12,9 @@
 #![allow(missing_docs)]
 
 use crate::error::{Result, StoreError};
-use crate::schema::{CURRENT_SCHEMA_VERSION, MIGRATION_001_INITIAL};
+use crate::schema::{
+    CURRENT_SCHEMA_VERSION, MIGRATION_001_INITIAL, MIGRATION_002_FTS5_INTERNAL_CONTENT,
+};
 use rusqlite::Connection;
 
 /// A single migration: a version number and the SQL to run. The
@@ -30,7 +32,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 1,
         sql: MIGRATION_001_INITIAL,
     },
-    // Migration { version: 2, sql: MIGRATION_002_ADD_FUZZ_JOBS },
+    Migration {
+        version: 2,
+        sql: MIGRATION_002_FTS5_INTERNAL_CONTENT,
+    },
 ];
 
 /// Run all un-applied migrations. Safe to call on every project open.

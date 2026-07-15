@@ -27,6 +27,13 @@ use rusqlite::params;
 /// constraint. The cascading delete would wipe every exchange in
 /// the project on every `open_project` call — and the
 /// `engine_persists_across_restart` test caught exactly that.
+///
+/// **`created_at` is intentionally not updated on conflict** — it
+/// represents the project's creation timestamp (see
+/// `bk_core::ProjectInfo`) and must be immutable. The first INSERT
+/// sets it; subsequent re-opens preserve it. Other fields
+/// (`name`, `target_host`, `updated_at`, `db_filename`,
+/// `talon_version`, `ca_fingerprint`) are refreshed on conflict.
 pub fn upsert(pool: &DbPool, info: &ProjectInfo) -> Result<()> {
     let conn = pool.get()?;
     conn.execute(
@@ -36,7 +43,6 @@ pub fn upsert(pool: &DbPool, info: &ProjectInfo) -> Result<()> {
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             target_host = excluded.target_host,
-            created_at = excluded.created_at,
             updated_at = excluded.updated_at,
             db_filename = excluded.db_filename,
             talon_version = excluded.talon_version,
@@ -126,6 +132,46 @@ mod tests {
             exchanges::list_recent(&pool, pid, 10).unwrap().len(),
             3,
             "upsert must not wipe exchanges via ON DELETE CASCADE"
+        );
+    }
+
+    /// Regression: `upsert` previously included `created_at` in the
+    /// `ON CONFLICT DO UPDATE` SET clause, so a re-upsert with a
+    /// freshly-stamped `Project` would overwrite the original
+    /// creation timestamp. `created_at` must be immutable: the
+    /// first INSERT sets it, and subsequent re-opens preserve it.
+    #[test]
+    fn upsert_preserves_created_at_across_reopen() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.db");
+        let mut info = make_info();
+        // Pin the original creation timestamp to a known value.
+        info.created_at = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let pool = crate::open(&path).unwrap();
+        upsert(&pool, &info).unwrap();
+
+        // Re-upsert with a different `created_at` (simulating a
+        // caller that re-stamps the timestamp on reopen, which is
+        // a bug pattern).
+        info.created_at = chrono::DateTime::parse_from_rfc3339("2099-12-31T23:59:59Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        upsert(&pool, &info).unwrap();
+
+        // Read the row back and assert the original `created_at` survived.
+        let conn = pool.get().unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT created_at FROM projects WHERE id = ?1",
+                rusqlite::params![info.id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored, "2026-01-01T00:00:00+00:00",
+            "created_at must be immutable across re-upserts"
         );
     }
 }

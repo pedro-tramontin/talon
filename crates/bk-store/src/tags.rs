@@ -23,26 +23,47 @@ pub struct NewTag {
 
 /// Create a tag, or fetch the existing one if the name is taken
 /// within the same project. Idempotent. Returns the tag's ID either way.
+///
+/// Concurrency: uses `INSERT OR IGNORE` with a pre-generated ID, then
+/// falls back to a `SELECT` for the existing row. This is safe under
+/// concurrent calls — if two threads both see "no existing row" and
+/// both try to INSERT, one INSERT wins and the other is ignored (no
+/// `UNIQUE` violation). Both threads then `SELECT` and converge on the
+/// same ID. The previous read-then-INSERT pattern could race: both
+/// threads could observe "no existing row" before either INSERT, and
+/// the loser would hit the `UNIQUE (project_id, name)` constraint.
 pub fn upsert(pool: &DbPool, project_id: ProjectId, new: &NewTag) -> Result<TagId> {
     let conn = pool.get()?;
-    // Try to fetch first — simpler than handling UNIQUE conflicts and
-    // matches the user's mental model of "I want this named tag".
-    let existing: Option<String> = conn
+    let new_id = TagId::new();
+    let inserted = conn.execute(
+        "INSERT OR IGNORE INTO tags (id, project_id, name, color) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            new_id.to_string(),
+            project_id.to_string(),
+            new.name,
+            new.color
+        ],
+    )?;
+    if inserted == 1 {
+        return Ok(new_id);
+    }
+    // Our INSERT was ignored — a concurrent caller won. Look up the
+    // existing row by (project_id, name).
+    let id_str: Option<String> = conn
         .query_row(
             "SELECT id FROM tags WHERE project_id = ?1 AND name = ?2",
             params![project_id.to_string(), new.name],
             |r| r.get(0),
         )
         .optional()?;
-    if let Some(id_str) = existing {
-        return id_str.parse().map_err(StoreError::from);
-    }
-    let id = TagId::new();
-    conn.execute(
-        "INSERT INTO tags (id, project_id, name, color) VALUES (?1, ?2, ?3, ?4)",
-        params![id.to_string(), project_id.to_string(), new.name, new.color],
-    )?;
-    Ok(id)
+    let id_str = id_str.ok_or_else(|| {
+        // Should be unreachable: INSERT was ignored *because* a row
+        // already exists. If it doesn't, the row was deleted between
+        // the INSERT and the SELECT — treat as a transient race and
+        // surface NotFound rather than panicking.
+        StoreError::NotFound(format!("tag '{}' in project {project_id}", new.name))
+    })?;
+    id_str.parse().map_err(StoreError::from)
 }
 
 /// List all tags for a project, alphabetical by name.
@@ -279,5 +300,51 @@ mod tests {
         .unwrap();
         // Same name, but different projects → different IDs.
         assert_ne!(id1, id2);
+    }
+
+    /// Regression: the previous read-then-INSERT pattern could race
+    /// when two threads both saw "no existing row" before either
+    /// INSERTed, causing one to hit `UNIQUE (project_id, name)`. The
+    /// fix uses `INSERT OR IGNORE` then `SELECT` to converge. All
+    /// concurrent upserts for the same `(project_id, name)` must
+    /// return the same ID and not error.
+    #[test]
+    fn upsert_concurrent_callers_converge_on_same_id() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let (_tmp, pool) = fresh_pool();
+        let project_id = ProjectId::new();
+        insert_project_row(&pool, project_id);
+
+        let n = 8usize;
+        let pool = Arc::new(pool);
+        let barrier = Arc::new(Barrier::new(n));
+        let mut handles = Vec::new();
+        for _ in 0..n {
+            let pool = Arc::clone(&pool);
+            let b = Arc::clone(&barrier);
+            let handle = thread::spawn(move || {
+                b.wait();
+                upsert(
+                    &pool,
+                    project_id,
+                    &NewTag {
+                        name: "race-target".into(),
+                        color: None,
+                    },
+                )
+            });
+            handles.push(handle);
+        }
+
+        let mut iter = handles.into_iter();
+        let first = iter.next().unwrap().join().expect("join").expect("upsert");
+        for h in iter {
+            let id = h.join().expect("join").expect("upsert");
+            assert_eq!(id, first, "concurrent upserts must converge on the same ID");
+        }
+        // And only one row was created.
+        assert_eq!(list(&pool, project_id).unwrap().len(), 1);
     }
 }

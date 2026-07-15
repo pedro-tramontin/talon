@@ -28,16 +28,23 @@ impl Projects {
     }
 
     /// Open (or re-open) a project's database. Returns the shared pool handle.
+    ///
+    /// Concurrency: the check+open+insert is atomic under a single write
+    /// lock. Without the write lock, two callers could each see "not
+    /// present", each `bk_store::open` the same file (creating two
+    /// distinct `DbPool`s), and each receive a different `Arc` — the
+    /// caller and `self.pools` would hold handles to different pools
+    /// pointing at the same DB file. `bk_store::open` is cheap (it just
+    /// returns a pool handle to the cached connection), so holding the
+    /// write lock across it is fine.
     pub fn open(&self, project: &Project) -> Result<Arc<bk_store::DbPool>> {
         let path = project_path(&self.dir, project.info.id, &project.info.db_filename)?;
-        if let Some(existing) = self.pools.read().unwrap().get(&project.info.id) {
+        let mut guard = self.pools.write().unwrap();
+        if let Some(existing) = guard.get(&project.info.id) {
             return Ok(existing.clone());
         }
         let pool = Arc::new(bk_store::open(&path)?);
-        self.pools
-            .write()
-            .unwrap()
-            .insert(project.info.id, pool.clone());
+        guard.insert(project.info.id, pool.clone());
         Ok(pool)
     }
 
@@ -86,3 +93,59 @@ impl std::fmt::Display for Projects {
 // referenced via `?`/`From` (the engine.rs file uses both).
 #[allow(dead_code)]
 fn _ensure_error_used(_: EngineError) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bk_core::Project;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    /// Regression: `open` was previously check-then-insert under a
+    /// read lock, then a write lock — a TOCTOU race. Two threads
+    /// could each see "not present", each call `bk_store::open` (two
+    /// distinct `DbPool`s to the same file), and each receive a
+    /// different `Arc`. After the fix, all concurrent opens for the
+    /// same project return the *same* `Arc` (pointer equality).
+    ///
+    /// The threads share the `Projects` instance via `Arc<Projects>`.
+    /// `Projects` itself isn't `Sync` (it holds an `RwLock`, which
+    /// is, but the wrapper is `!Sync` by default), so we wrap it in
+    /// `Arc` and clone the handle — the spawned threads then take
+    /// `&Projects` through the `Arc`. With the old check-then-insert
+    /// pattern, this test would have failed with a non-matching
+    /// `Arc::ptr_eq`; with the write-lock-around-whole-sequence
+    /// pattern, all 8 threads converge on the same `DbPool`.
+    #[test]
+    fn concurrent_open_returns_same_pool_handle() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let projects = Arc::new(Projects::new(tmp.path()));
+        let project = Arc::new(Project::new("acme.bb", "acme.bb", "0.1.0"));
+
+        let n = 8usize;
+        let barrier = Arc::new(Barrier::new(n));
+        let mut handles = Vec::new();
+        for _ in 0..n {
+            let projects = Arc::clone(&projects);
+            let project = Arc::clone(&project);
+            let b = Arc::clone(&barrier);
+            let handle = thread::spawn(move || {
+                b.wait();
+                projects.open(&project)
+            });
+            handles.push(handle);
+        }
+
+        let mut iter = handles.into_iter();
+        let first: Arc<bk_store::DbPool> =
+            iter.next().unwrap().join().expect("join").expect("open");
+        for h in iter {
+            let pool = h.join().expect("join").expect("open");
+            assert!(
+                Arc::ptr_eq(&first, &pool),
+                "concurrent opens for the same project must return the same DbPool handle"
+            );
+        }
+        assert_eq!(projects.open_count(), 1);
+    }
+}
