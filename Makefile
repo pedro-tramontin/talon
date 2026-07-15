@@ -27,7 +27,7 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-.PHONY: help build-ui fmt clippy test audit audit-prod audit-binary ci clean
+.PHONY: help build-ui fmt clippy test audit audit-prod audit-binary ci clean guard-ui-dist
 
 # Default target: print help.
 help:
@@ -54,10 +54,28 @@ build-ui:
 fmt:
 	cargo fmt --all -- --check
 
-clippy:
+# clippy and test both trigger the app crate's tauri::generate_context!()
+# proc macro, which reads ui/dist/index.html at compile time and panics
+# with a cryptic "file not found" if it's missing. The CI workflow
+# downloads the UI dist as a workflow artifact, so CI is fine; this
+# guard catches the local fresh-clone case before the panic. Run
+# `make build-ui` first, or use `make ci` (which depends on build-ui).
+#
+# We can't use a shared recipe (e.g. "clippy test:") because the cargo
+# invocations differ in flags, so the guard is duplicated for clarity.
+guard-ui-dist:
+	@if [[ ! -f ui/dist/index.html ]]; then \
+	  echo "ERROR: ui/dist/index.html is missing."; \
+	  echo "The app crate's tauri::generate_context!() macro reads this"; \
+	  echo "file at compile time. Run \`make build-ui\` first, or use"; \
+	  echo "\`make ci\` which has build-ui as a prereq."; \
+	  exit 1; \
+	fi
+
+clippy: guard-ui-dist
 	cargo clippy --workspace --all-targets -- -D warnings
 
-test:
+test: guard-ui-dist
 	cargo test --workspace
 
 # Supply-chain audit. See docs/adr/0001-supply-chain-monitoring.md
@@ -118,10 +136,19 @@ audit-binary:
 	@echo "audit-binary: building unstripped release binary and scanning symbol table"
 	@cd app && \
 	  cargo build --release --bin talon --config 'profile.release.strip=false' 2>&1 | tail -3
+	# Note: this `find` runs from the workspace root (each make recipe line
+	# is a separate shell, so the `cd app` above does NOT propagate). Cargo
+	# writes workspace build artifacts to the workspace-root target/, which
+	# is where this find looks. The error message below only fires if the
+	# cargo build above didn't actually produce app/target/release/talon or
+	# the workspace-root target/release/talon.
 	@BINARY=$$(find target/release -maxdepth 1 -name 'talon' -type f -executable | head -1) && \
 	  if [[ -z "$$BINARY" ]]; then \
-	    echo "ERROR: release binary not found at $$(pwd)/target/release/talon"; \
-	    echo "Hint: the binary may be at a different path. Check target/ manually."; \
+	    echo "ERROR: release binary 'talon' not found at $(pwd)/target/release/talon"; \
+	    echo "The cargo build above must produce this path. Likely causes:"; \
+	    echo "  - build failed silently (scroll up for compile errors)"; \
+	    echo "  - the binary name in app/Cargo.toml [[[bin]]] section changed"; \
+	    echo "  - the workspace target/ was moved (check CARGO_TARGET_DIR)"; \
 	    exit 1; \
 	  fi && \
 	  echo "audit-binary: scanning $$BINARY ($$(stat -c%s $$BINARY) bytes)" && \

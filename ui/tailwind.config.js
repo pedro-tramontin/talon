@@ -1,9 +1,14 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
-  // follow OS by default; user override in Settings adds/removes `.dark`
-  // class on <html>. The plan defines three values: "dark" | "light" | "system".
-  darkMode: ["class", "media"],
+  // dark mode is class-toggled. The "system" value (plan-defined) means
+  // follow the OS by default and let the user override in Settings by
+  // adding/removing `.dark` on <html>. The actual system-following logic
+  // lives in ui/src/main.tsx via matchMedia (TODO when we add the toggle).
+  // The selector ".dark" is Tailwind's default but we set it explicitly
+  // here so the intent is obvious. Form is `["class", "<selector>"]` —
+  // see https://tailwindcss.com/docs/dark-mode#toggling-dark-mode-manually
+  darkMode: ["class", ".dark"],
   theme: {
     extend: {
       colors: {

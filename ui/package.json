@@ -14,7 +14,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src --ext .ts,.tsx",
+    "lint": "eslint src",
     "audit:prod": "pnpm audit --prod --audit-level=moderate"
   },
   "dependencies": {
@@ -32,6 +32,8 @@
     "@vitejs/plugin-react": "^6.0.2",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.36.0",
+    "@eslint/js": "^9.36.0",
+    "typescript-eslint": "^8.18.0",
     "jsdom": "^25.0.0",
     "postcss": "^8.4.45",
     "tailwindcss": "^3.4.10",
