@@ -8,6 +8,8 @@ resolver = "2"
 # at each step so cold builds stay fast.
 members = [
     "crates/bk-core",
+    "crates/bk-store",
+    "crates/bk-engine",
     "app",
 ]
 
@@ -22,6 +24,7 @@ authors = ["Pedro Tramontin"]
 [workspace.dependencies]
 # Internal
 bk-core = { path = "crates/bk-core" }
+bk-store = { path = "crates/bk-store" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
@@ -48,6 +51,17 @@ tauri-build = { version = "2.0", features = [] }
 # Misc
 uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+# HTTP model
+http = "1.1"
+url = { version = "2.5", features = ["serde"] }
+bytes = { version = "1.7", features = ["serde"] }
+
+# Regex
+regex = "1.10"
+
+# Connection pool (for bk-store)
+r2d2 = "0.8"
 
 [profile.release]
 lto = "thin"           # good size/speed tradeoff, fast link
