@@ -19,9 +19,6 @@
   --color-scope-unscoped: #eab308;
 }
 
-@source "../index.html";
-@source "../src/**/*.{ts,tsx}";
-
 @layer base {
   html, body, #root { height: 100%; }
   body {
