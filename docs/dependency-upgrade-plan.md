@@ -43,7 +43,6 @@ All of these are confirmed compatible with **Tauri 2.11.5 (Rust) + @tauri-apps/a
 
 ### What stays on the previous version (intentional, not forgotten)
 
-- **pnpm 9.12.3** (in `packageManager`) — pnpm 10 changed some lifecycle-script defaults; pnpm 11 is current. Bumping pnpm is a separate PR — it's a toolchain change, not a dep change.
 - **Node engine `>=20.0.0`** — fine; Node 22 is current LTS.
 - **Rust toolchain pinned to stable via `dtolnay/rust-toolchain@stable` in CI** — no action.
 - **`cargo-deny` ignores** in `deny.toml` — unchanged. The 18 upstream-blocked advisories are still upstream-blocked.
@@ -86,6 +85,19 @@ These are major-version bumps that need **config-file or code changes** in the r
 - **What changes**: pnpm 10 changed `node_modules` layout slightly and deprecated some lifecycle script defaults. pnpm 11 is current.
 - **Files affected**: `package.json` (`packageManager` field), possibly `.npmrc`.
 - **Why defer**: this is a toolchain change, not a dep change. Should land with a fresh `pnpm install` and a CI re-run to confirm nothing breaks.
+
+> **Update (2026-07-15):** pnpm 9.12.3 → 11.13.0 was pulled into Phase 1 of the
+> skeleton PR. npm retired the legacy `pnpm audit` endpoint in 2026, and pnpm's
+> replacement is only in 11.x. Without this bump, the supply-chain CI job fails
+> with `ERR_PNPM_AUDIT_BAD_RESPONSE`. The bump is safe: `pnpm 11.13.0` reads
+> the pnpm-9 lockfile natively (lockfileVersion 9.0 still works), all 5 UI
+> jobs (install / test / build / audit) pass on 11.13.0, and the
+> `pnpm install --frozen-lockfile` step in CI works without regenerating
+> the lockfile. The transitive patch bumps that pnpm 11 picks up
+> (`autoprefixer 10.4.20 → 10.5.x`, `postcss 8.4.45 → 8.5.x`,
+> `eslint 9.36.0 → 9.39.x`) are within the major ranges already pinned.
+> CI workflow `.github/workflows/ci.yml` updated: `version: 9` → `version: 11`
+> in both the `ui` and `supply-chain` jobs.
 
 ## Phase 3+ — Dependabot + the watchdog
 
