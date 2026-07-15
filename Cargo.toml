@@ -8,6 +8,8 @@ resolver = "2"
 # at each step so cold builds stay fast.
 members = [
     "crates/bk-core",
+    "crates/bk-store",
+    "crates/bk-engine",
     "app",
 ]
 
@@ -22,6 +24,7 @@ authors = ["Pedro Tramontin"]
 [workspace.dependencies]
 # Internal
 bk-core = { path = "crates/bk-core" }
+bk-store = { path = "crates/bk-store" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
