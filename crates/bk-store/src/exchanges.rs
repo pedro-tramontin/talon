@@ -121,14 +121,15 @@ pub fn set_starred(pool: &DbPool, id: ExchangeId, starred: bool) -> Result<()> {
 }
 
 /// Delete an exchange. The `ON DELETE CASCADE` on `exchange_tags` cleans
-/// up tag joins; the FTS5 row uses the exchange's rowid, which we look
+/// up tag joins. The FTS5 row uses the exchange's rowid, which we look
 /// up before the row is gone.
+///
+/// **FTS5 contentless tables can't be DELETEd from** — the documented
+/// idiom is to insert a `delete` command row with all columns blanked.
+/// See <https://www.sqlite.org/fts5.html#the_delete_command>.
 pub fn delete(pool: &DbPool, id: ExchangeId) -> Result<()> {
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
-    // Look up the FTS5 rowid before deleting the exchanges row.
-    // The FTS5 table is contentless; we use the exchanges rowid as
-    // the FTS rowid for stable cross-references.
     let rowid: Option<i64> = tx
         .query_row(
             "SELECT rowid FROM exchanges WHERE id = ?1",
@@ -137,7 +138,17 @@ pub fn delete(pool: &DbPool, id: ExchangeId) -> Result<()> {
         )
         .optional()?;
     if let Some(r) = rowid {
-        tx.execute("DELETE FROM exchange_fts WHERE rowid = ?1", params![r])?;
+        // FTS5 'delete' command: insert a row with the special value
+        // 'delete' in the FTS5 control column and empty strings for
+        // each indexed column. The exchange_fts table has 7 indexed
+        // columns: url, method, request_headers, response_headers,
+        // request_body, response_body, notes.
+        tx.execute(
+            r#"INSERT INTO exchange_fts
+                (exchange_fts, rowid, url, method, request_headers, response_headers, request_body, response_body, notes)
+               VALUES ('delete', ?1, '', '', '', '', '', '', '')"#,
+            params![r],
+        )?;
     }
     tx.execute(
         "DELETE FROM exchanges WHERE id = ?1",
@@ -168,7 +179,7 @@ fn scope_state_from_str(s: &str) -> Result<ScopeState> {
     })
 }
 
-fn row_to_exchange(row: &Row<'_>) -> rusqlite::Result<HttpExchange> {
+pub(crate) fn row_to_exchange(row: &Row<'_>) -> rusqlite::Result<HttpExchange> {
     let id_str: String = row.get(0)?;
     let pid_str: String = row.get(1)?;
     let ts_str: String = row.get(2)?;
