@@ -40,6 +40,8 @@ make clean      # cargo clean + rm -rf ui/dist ui/node_modules
 
 The project enforces a blocking supply-chain audit on every PR and push to main. See [`docs/adr/0001-supply-chain-monitoring.md`](docs/adr/0001-supply-chain-monitoring.md) for the full policy.
 
+For dep-version bumps (Tauri, React, Vite, etc.) and which ones go in which PR, see [`docs/dependency-upgrade-plan.md`](docs/dependency-upgrade-plan.md).
+
 **What's enforced:**
 
 - `pnpm audit --audit-level=moderate` — fails on any JS advisory at moderate severity or above.
@@ -72,6 +74,7 @@ talon/
 ├── Makefile                # build orchestration
 ├── docs/
 │   ├── requirements.md
+│   ├── dependency-upgrade-plan.md
 │   └── adr/
 │       └── 0001-supply-chain-monitoring.md
 ├── crates/
