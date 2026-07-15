@@ -5,7 +5,7 @@
 #![allow(missing_docs)]
 
 use crate::projects::Projects;
-use bk_core::{HttpExchange, ProjectId};
+use bk_core::{ExchangeId, HttpExchange, ProjectId, Tag, TagId};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -72,7 +72,7 @@ impl Engine {
     pub fn get_exchange(
         &self,
         project_id: ProjectId,
-        id: bk_core::ExchangeId,
+        id: ExchangeId,
     ) -> crate::Result<Option<HttpExchange>> {
         let pool = self
             .projects
@@ -101,12 +101,126 @@ impl Engine {
         project_id: ProjectId,
         query: &str,
         limit: u32,
-    ) -> crate::Result<Vec<bk_core::ExchangeId>> {
+    ) -> crate::Result<Vec<ExchangeId>> {
         let pool = self
             .projects
             .get(project_id)
             .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
         bk_store::fts::search(&pool, project_id, query, limit).map_err(Into::into)
+    }
+
+    /// Delete an exchange by ID. Removes the FTS5 row, the
+    /// `exchange_tags` join rows (CASCADE), and the exchange itself.
+    /// Returns `ProjectNotOpen` if the project is not open.
+    pub fn delete_exchange(&self, project_id: ProjectId, id: ExchangeId) -> crate::Result<()> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::exchanges::delete(&pool, id).map_err(Into::into)
+    }
+
+    /// Update the free-form notes on an exchange. The FTS5 row is
+    /// re-indexed in the same transaction (the `update_notes`
+    /// function in `bk_store::exchanges` is the one that was rewritten
+    /// to fix the stale-FTS bug — see PR #11's Copilot review fix #4).
+    pub fn update_notes(
+        &self,
+        project_id: ProjectId,
+        id: ExchangeId,
+        notes: &str,
+    ) -> crate::Result<()> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::exchanges::update_notes(&pool, id, notes).map_err(Into::into)
+    }
+
+    /// Toggle the starred flag on an exchange. Used by the ⭐ button
+    /// on each row in the UI's exchange list.
+    pub fn set_starred(
+        &self,
+        project_id: ProjectId,
+        id: ExchangeId,
+        starred: bool,
+    ) -> crate::Result<()> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::exchanges::set_starred(&pool, id, starred).map_err(Into::into)
+    }
+
+    /// Create a tag (or return the existing one if the name is taken
+    /// within the project). Idempotent. Returns the tag's ID.
+    pub fn tag_upsert(
+        &self,
+        project_id: ProjectId,
+        new: bk_store::tags::NewTag,
+    ) -> crate::Result<TagId> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::tags::upsert(&pool, project_id, &new).map_err(Into::into)
+    }
+
+    /// List all tags for a project, alphabetical by name. Used by
+    /// the right-rail tag-picker to populate the available list.
+    pub fn list_tags(&self, project_id: ProjectId) -> crate::Result<Vec<Tag>> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::tags::list(&pool, project_id).map_err(Into::into)
+    }
+
+    /// List the tags currently attached to a specific exchange.
+    /// Used by the right-rail tag-picker to show the current state
+    /// when the user has an exchange selected.
+    pub fn list_tags_for_exchange(
+        &self,
+        project_id: ProjectId,
+        exchange_id: ExchangeId,
+    ) -> crate::Result<Vec<Tag>> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::tags::list_for_exchange(&pool, exchange_id).map_err(Into::into)
+    }
+
+    /// Attach a tag to an exchange. Idempotent. The `bk_store::tags::attach`
+    /// function also enforces the cross-project invariant (the tag
+    /// must belong to the same project as the exchange) -- this
+    /// happens transparently because `bk_store::tags::attach` uses
+    /// an `INSERT ... SELECT WHERE EXISTS` with a project_id JOIN.
+    pub fn tag_attach(
+        &self,
+        project_id: ProjectId,
+        tag_id: TagId,
+        exchange_id: ExchangeId,
+    ) -> crate::Result<()> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::tags::attach(&pool, tag_id, exchange_id).map_err(Into::into)
+    }
+
+    /// Detach a tag from an exchange. No-op if not attached.
+    pub fn tag_detach(
+        &self,
+        project_id: ProjectId,
+        tag_id: TagId,
+        exchange_id: ExchangeId,
+    ) -> crate::Result<()> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::tags::detach(&pool, tag_id, exchange_id).map_err(Into::into)
     }
 
     /// Number of currently open projects.

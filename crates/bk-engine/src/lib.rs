@@ -157,4 +157,231 @@ mod tests {
             assert_eq!(hits.len(), 1, "FTS5 index was rebuilt on reopen");
         }
     }
+
+    // ── Deferred Phase 8 engine methods (post-PR #11 follow-up) ─────
+    //
+    // The Phase 2 Part B plan listed 6 methods that wrap existing
+    // bk_store functions but were deferred to "Phase 8" (axum browser
+    // server) when the engine was first designed. The proxy (Phase 3)
+    // also benefits from a few of these — e.g. `set_starred` to flag
+    // important requests as the user clicks the star, `tag_attach`
+    // to auto-tag fuzzer findings, `update_notes` to persist notes
+    // typed in the right rail. Adding them now keeps the proxy's
+    // Tauri command layer thin and lets the test suite cover the
+    // wrappers directly.
+    //
+    // All 6 methods are simple pass-throughs to bk_store, but they
+    // each have the same project-open invariant the existing methods
+    // enforce (ProjectNotOpen if the project isn't open). The tests
+    // below cover both the happy path and the invariant.
+
+    /// `set_starred` toggles the flag and persists across restart.
+    #[test]
+    fn engine_set_starred_toggles_persist() {
+        let tmp = TempDir::new().unwrap();
+        let project = bk_core::Project::new("acme.bb", "acme.bb", "0.1.0");
+        let project_id = project.info.id;
+
+        let engine = Engine::new(tmp.path()).unwrap();
+        engine.open_project(&project).unwrap();
+        let ex = make_exchange(project_id, "/x");
+        let id = ex.meta.id;
+        engine.insert_exchange(project_id, &ex).unwrap();
+
+        // Star it.
+        engine.set_starred(project_id, id, true).unwrap();
+        let back = engine.get_exchange(project_id, id).unwrap().unwrap();
+        assert!(back.meta.starred, "starred after set_starred(true)");
+
+        // Unstar it.
+        engine.set_starred(project_id, id, false).unwrap();
+        let back = engine.get_exchange(project_id, id).unwrap().unwrap();
+        assert!(!back.meta.starred, "not starred after set_starred(false)");
+    }
+
+    /// `update_notes` persists notes and keeps the FTS5 index in sync
+    /// (the proxy will use this for the right-rail notes editor).
+    /// The "FTS5 in sync" part is the regression we hit in §2.9's
+    /// Copilot review fix #4 — if notes are searchable after update,
+    /// the FTS5 row was rebuilt correctly.
+    #[test]
+    fn engine_update_notes_persists_and_reindexes_fts() {
+        let tmp = TempDir::new().unwrap();
+        let project = bk_core::Project::new("acme.bb", "acme.bb", "0.1.0");
+        let project_id = project.info.id;
+
+        let engine = Engine::new(tmp.path()).unwrap();
+        engine.open_project(&project).unwrap();
+        let ex = make_exchange(project_id, "/api/users");
+        let id = ex.meta.id;
+        engine.insert_exchange(project_id, &ex).unwrap();
+
+        // Before the note update, "needle" is not in any searchable field.
+        let before = engine.search(project_id, "needle", 10).unwrap();
+        assert!(
+            before.is_empty(),
+            "no hits for 'needle' before update_notes"
+        );
+
+        // Update with a note that contains "needle".
+        engine
+            .update_notes(project_id, id, "found the needle in the haystack")
+            .unwrap();
+        let back = engine.get_exchange(project_id, id).unwrap().unwrap();
+        assert_eq!(back.meta.notes, "found the needle in the haystack");
+
+        // After the update, the FTS5 index should have re-indexed and
+        // "needle" should now match.
+        let after = engine.search(project_id, "needle", 10).unwrap();
+        assert_eq!(after.len(), 1, "FTS5 re-indexed after update_notes");
+        assert_eq!(after[0], id, "FTS5 hit is the right exchange");
+    }
+
+    /// `delete_exchange` removes the exchange, the FTS5 row, and
+    /// any exchange_tags join rows. After delete, `get_exchange`
+    /// returns None and the search no longer finds it.
+    #[test]
+    fn engine_delete_exchange_removes_from_storage_and_fts() {
+        let tmp = TempDir::new().unwrap();
+        let project = bk_core::Project::new("acme.bb", "acme.bb", "0.1.0");
+        let project_id = project.info.id;
+
+        let engine = Engine::new(tmp.path()).unwrap();
+        engine.open_project(&project).unwrap();
+        let ex = make_exchange(project_id, "/admin");
+        let id = ex.meta.id;
+        engine.insert_exchange(project_id, &ex).unwrap();
+
+        // Sanity: present before delete.
+        assert!(engine.get_exchange(project_id, id).unwrap().is_some());
+        assert_eq!(engine.search(project_id, "admin", 10).unwrap().len(), 1);
+
+        engine.delete_exchange(project_id, id).unwrap();
+
+        assert!(engine.get_exchange(project_id, id).unwrap().is_none());
+        assert_eq!(
+            engine.search(project_id, "admin", 10).unwrap().len(),
+            0,
+            "FTS5 row removed by delete"
+        );
+    }
+
+    /// `tag_upsert` + `tag_attach` + `list_tags` + `tag_detach`:
+    /// the tag lifecycle at the engine layer. `tag_upsert` is
+    /// idempotent within a project (same name → same id).
+    #[test]
+    fn engine_tag_lifecycle() {
+        let tmp = TempDir::new().unwrap();
+        let project = bk_core::Project::new("acme.bb", "acme.bb", "0.1.0");
+        let project_id = project.info.id;
+
+        let engine = Engine::new(tmp.path()).unwrap();
+        engine.open_project(&project).unwrap();
+        let ex = make_exchange(project_id, "/x");
+        let exchange_id = ex.meta.id;
+        engine.insert_exchange(project_id, &ex).unwrap();
+
+        // Upsert twice — same name → same id (idempotent).
+        let id1 = engine
+            .tag_upsert(
+                project_id,
+                bk_store::tags::NewTag {
+                    name: "vuln".into(),
+                    color: Some("#ef4444".into()),
+                },
+            )
+            .unwrap();
+        let id2 = engine
+            .tag_upsert(
+                project_id,
+                bk_store::tags::NewTag {
+                    name: "vuln".into(),
+                    color: Some("#ef4444".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(id1, id2, "tag upsert is idempotent within a project");
+
+        // list_tags returns the tag with the color we set.
+        let tags = engine.list_tags(project_id).unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "vuln");
+        assert_eq!(tags[0].color.as_deref(), Some("#ef4444"));
+
+        // Attach + list_tags_for_exchange.
+        engine.tag_attach(project_id, id1, exchange_id).unwrap();
+        let on_ex = engine
+            .list_tags_for_exchange(project_id, exchange_id)
+            .unwrap();
+        assert_eq!(on_ex.len(), 1);
+        assert_eq!(on_ex[0].id, id1);
+
+        // Detach.
+        engine.tag_detach(project_id, id1, exchange_id).unwrap();
+        let on_ex = engine
+            .list_tags_for_exchange(project_id, exchange_id)
+            .unwrap();
+        assert!(on_ex.is_empty(), "tag detached");
+    }
+
+    /// The project-open invariant: every method on a closed project
+    /// returns `ProjectNotOpen`. The existing `insert_into_non_open_project_errors`
+    /// covers `insert_exchange`; this test covers the 6 new methods.
+    #[test]
+    fn engine_methods_error_on_non_open_project() {
+        let tmp = TempDir::new().unwrap();
+        let engine = Engine::new(tmp.path()).unwrap();
+        let project_id = bk_core::ProjectId::new();
+        let exchange_id = bk_core::ExchangeId::new();
+        let tag_id = bk_core::TagId::new();
+
+        // No `open_project` call — all of these should error.
+        let results: Vec<(&str, crate::Result<()>)> = vec![
+            (
+                "delete_exchange",
+                engine.delete_exchange(project_id, exchange_id),
+            ),
+            (
+                "update_notes",
+                engine.update_notes(project_id, exchange_id, "n"),
+            ),
+            (
+                "set_starred",
+                engine.set_starred(project_id, exchange_id, true),
+            ),
+            (
+                "tag_attach",
+                engine.tag_attach(project_id, tag_id, exchange_id),
+            ),
+            (
+                "tag_detach",
+                engine.tag_detach(project_id, tag_id, exchange_id),
+            ),
+        ];
+        for (name, r) in &results {
+            assert!(
+                matches!(r, Err(EngineError::ProjectNotOpen(_))),
+                "{name} on non-open project should be ProjectNotOpen, got {r:?}"
+            );
+        }
+        // `tag_upsert` and `list_tags` return values, not ().
+        assert!(matches!(
+            engine.tag_upsert(
+                project_id,
+                bk_store::tags::NewTag {
+                    name: "x".into(),
+                    color: None
+                }
+            ),
+            Err(EngineError::ProjectNotOpen(_))
+        ));
+        assert!(matches!(
+            engine.list_tags(project_id),
+            Err(EngineError::ProjectNotOpen(_))
+        ));
+        assert!(matches!(
+            engine.list_tags_for_exchange(project_id, exchange_id),
+            Err(EngineError::ProjectNotOpen(_))
+        ));
+    }
 }
