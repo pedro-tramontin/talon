@@ -7,6 +7,7 @@
 pub mod db;
 pub mod error;
 pub mod migrations;
+pub mod schema;
 
 pub use db::{open, project_path, DbPool};
 pub use error::{Result, StoreError};
