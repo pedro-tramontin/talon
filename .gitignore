@@ -1,0 +1,30 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+dist/
+.vite/
+
+# Tauri
+src-tauri/target/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local env / secrets
+.env
+.env.local
+
+# Logs
+*.log

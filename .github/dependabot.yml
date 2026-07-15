@@ -1,0 +1,92 @@
+# Dependabot configuration
+#
+# Auto-creates PRs for dependency updates in both ecosystems. Weekly
+# cadence is a balance between "stay current" and "don't drown in PRs".
+# Group minor/patch updates so a single Dependabot PR bundles related
+# bumps (e.g. all eslint plugin minor versions at once) -- reduces PR
+# noise without losing the supply-chain signal.
+#
+# Limits: 5 open PRs per ecosystem is the max allowed. If we hit the
+# limit, Dependabot stops opening until we close some. That's the
+# signal to merge or close stale Dependabot PRs.
+version: 2
+
+updates:
+  # ── pnpm / npm ecosystem (UI) ───────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 5
+    # Bundle related minor/patch updates into a single PR. Major
+    # versions still come in one-at-a-time so we can review breaking
+    # changes individually.
+    groups:
+      vite-stack:
+        patterns:
+          - "vite"
+          - "vitest"
+          - "@vitejs/*"
+          - "esbuild"
+      react-stack:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+          - "@testing-library/*"
+      eslint-stack:
+        patterns:
+          - "eslint"
+          - "@typescript-eslint/*"
+      build-tools:
+        patterns:
+          - "postcss"
+          - "tailwindcss"
+          - "autoprefixer"
+      # Anything not in a group comes through as its own PR.
+    # Ignore major version bumps of the bundler/test runner so they
+    # land in their own reviewed PR. The recent vite 5->6 and vitest
+    # 2->3 were done in the same PR; future similar transitions
+    # should be explicit.
+    ignore:
+      - dependency-name: "vite"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vitest"
+        update-types: ["version-update:semver-major"]
+    labels:
+      - "dependencies"
+      - "ui"
+
+  # ── Cargo ecosystem (workspace) ──────────────────────────────────
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 5
+    groups:
+      # Tauri's main crates move together; bundle them so a single
+      # PR can update tauri + tauri-build + tauri-utils in lockstep.
+      tauri-stack:
+        patterns:
+          - "tauri"
+          - "tauri-*"
+      async-stack:
+        patterns:
+          - "tokio"
+          - "tokio-*"
+          - "futures*"
+          - "async-trait"
+      serde-stack:
+        patterns:
+          - "serde"
+          - "serde_*"
+    labels:
+      - "dependencies"
+      - "rust"

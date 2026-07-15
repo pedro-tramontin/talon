@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+# Members added per-phase.
+#   - bk-core: Phase 1.2 (workspace scaffold, trivial lib)
+#   - app:     Phase 1.3 (Tauri 2 binary, named `talon`)
+# Future crates (bk-store, bk-proxy, bk-fuzzer, bk-server) get added in
+# their respective phases. The plan deliberately keeps the workspace small
+# at each step so cold builds stay fast.
+members = [
+    "crates/bk-core",
+    "app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+license = "Apache-2.0"
+repository = "https://github.com/pedro-tramontin/talon"
+authors = ["Pedro Tramontin"]
+
+[workspace.dependencies]
+# Internal
+bk-core = { path = "crates/bk-core" }
+
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Tauri (only used by the `app` crate, but version-pinned here)
+tauri = { version = "2.1", features = [] }
+tauri-build = { version = "2.0", features = [] }
+
+# Misc
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+lto = "thin"           # good size/speed tradeoff, fast link
+codegen-units = 1
+strip = true
+opt-level = 3
+
+[profile.dev]
+opt-level = 0
+debug = true
+incremental = true
