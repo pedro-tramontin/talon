@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
+use std::str::FromStr;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -28,6 +29,28 @@ impl<T> Id<T> {
             _marker: PhantomData,
         }
     }
+
+    /// Construct an `Id<T>` from an existing UUID. Used by the storage
+    /// layer when deserializing rows that were read from the database.
+    pub fn from_uuid(uuid: Uuid) -> Self {
+        Self {
+            inner: uuid,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Construct an `Id<T>` that is the all-zeros UUID. The storage
+    /// layer uses this as a placeholder when the caller hasn't yet
+    /// generated an id (the row insert will overwrite it).
+    pub fn nil() -> Self {
+        Self::from_uuid(Uuid::nil())
+    }
+
+    /// Expose the inner UUID. Used by the storage layer when binding
+    /// parameters to SQLite statements.
+    pub fn as_uuid(&self) -> Uuid {
+        self.inner
+    }
 }
 
 impl<T> Default for Id<T> {
@@ -42,6 +65,17 @@ impl<T> std::fmt::Display for Id<T> {
     }
 }
 
+/// Parse an `Id<T>` from the standard UUID string form. The marker type
+/// `T` is irrelevant to the parse — it's the same UUID format for every
+/// table — but Rust's type system keeps the result distinct.
+impl<T> FromStr for Id<T> {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self::from_uuid(Uuid::from_str(s)?))
+    }
+}
+
 // Marker types. Each corresponds to a table in the SQLite schema.
 //
 // `PartialEq + Eq` are required because `Id<T>` derives them — Rust's
@@ -49,18 +83,21 @@ impl<T> std::fmt::Display for Id<T> {
 // the impl, and we want `Id<Project> == Id<Project>` to work without
 // the caller having to thread bounds manually.
 //
-// `Clone` is required for the same reason: any `#[derive(Clone)]` on
-// a containing struct (e.g. `Request`, `ExchangeMeta`) propagates a
-// `T: Clone` bound to `Id<T>`. These are zero-sized so `Clone` is free.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// `Clone + Copy` are required for the same reason: any `#[derive(Clone)]`
+// or `#[derive(Copy)]` on a containing struct (e.g. `Request`,
+// `ExchangeMeta`) propagates a `T: Clone` or `T: Copy` bound to
+// `Id<T>`. These are zero-sized so `Clone` and `Copy` are free.
+// `Hash` is required so `Id<T>` can be used as a `HashMap` key (the
+// engine stores `HashMap<ProjectId, Arc<DbPool>>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Project;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Exchange;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Tag;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Note;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FuzzJob;
 
 pub type ProjectId = Id<Project>;
@@ -107,5 +144,25 @@ mod tests {
         // The mere existence of the two functions with distinct parameter
         // types is the test. If they collapsed to the same type, the
         // compiler would complain about duplicate definitions.
+    }
+
+    #[test]
+    fn from_uuid_roundtrips_via_display_and_from_str() {
+        let original = ExchangeId::new();
+        let s = original.to_string();
+        let parsed: ExchangeId = s.parse().expect("valid UUID");
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn from_str_rejects_garbage() {
+        let bad = "not-a-uuid".parse::<TagId>();
+        assert!(bad.is_err());
+    }
+
+    #[test]
+    fn nil_is_all_zeros() {
+        let n: ProjectId = ProjectId::nil();
+        assert_eq!(n.as_uuid(), Uuid::nil());
     }
 }

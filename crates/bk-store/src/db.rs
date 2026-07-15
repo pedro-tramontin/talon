@@ -173,9 +173,9 @@ mod tests {
     fn project_path_rejects_path_traversal() {
         let tmp = TempDir::new().unwrap();
         let pid = ProjectId::new();
-        assert!(project_path(tmp.path(), pid.clone(), "../etc/passwd").is_err());
-        assert!(project_path(tmp.path(), pid.clone(), "subdir/file.db").is_err());
-        assert!(project_path(tmp.path(), pid.clone(), "").is_err());
+        assert!(project_path(tmp.path(), pid, "../etc/passwd").is_err());
+        assert!(project_path(tmp.path(), pid, "subdir/file.db").is_err());
+        assert!(project_path(tmp.path(), pid, "").is_err());
         assert!(project_path(tmp.path(), pid, "ok.db").is_ok());
     }
 }
