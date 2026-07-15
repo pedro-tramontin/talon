@@ -204,9 +204,10 @@ impl Request {
     }
 
     /// Convenience: the URL's host (lowercased). Used by the scope engine
-    /// (Phase 6) to decide whether a request is in-scope.
-    pub fn host(&self) -> String {
-        self.url.host_str().unwrap_or("").to_ascii_lowercase()
+    /// (Phase 6) to decide whether a request is in-scope. Returns `None`
+    /// for URLs without a host component (e.g. `file:///path`).
+    pub fn host(&self) -> Option<String> {
+        self.url.host_str().map(str::to_ascii_lowercase)
     }
 }
 
@@ -289,7 +290,7 @@ mod tests {
 
     #[test]
     fn request_get_parses_url() {
-        let r = Request::get("https://example.com/api/users").unwrap();
+        let r = Request::get("https://example.com/api/users").expect("valid URL");
         assert_eq!(r.method, Method::GET);
         assert_eq!(r.url.host_str(), Some("example.com"));
         assert_eq!(r.url.path(), "/api/users");
@@ -303,8 +304,8 @@ mod tests {
 
     #[test]
     fn request_host_is_lowercased() {
-        let r = Request::get("https://EXAMPLE.com/").unwrap();
-        assert_eq!(r.host(), "example.com");
+        let r = Request::get("https://EXAMPLE.com/").expect("valid URL");
+        assert_eq!(r.host().as_deref(), Some("example.com"));
     }
 
     #[test]
