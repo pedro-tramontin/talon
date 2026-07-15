@@ -12,8 +12,18 @@
 # `supply-chain` job will fail. That's the goal: the moment a fix exists
 # upstream, we want to know.
 #
-# The `[licenses]` section below allows a curated set of OSI-approved
-# permissive licenses plus a few that are common in transitive deps.
+# The `[licenses]` section below is an allow list of every license
+# currently encountered in the dependency tree. Most are OSI-approved
+# permissive (MIT, Apache-2.0, BSD-3-Clause, Zlib, 0BSD, CC0-1.0,
+# MIT-0, Unlicense). A few are weak copyleft or public-domain
+# (MPL-2.0, LGPL-2.1-or-later) — those are allowed because they
+# come from transitive deps we don't own (Tauri's webview2-com and
+# libdbus-sys respectively). The list is intended to be the
+# minimum-viable set: each entry corresponds to a real crate in
+# the tree, and removing an entry causes a real `cargo deny check
+# licenses` failure. When a transitive dep is dropped upstream,
+# remove the corresponding entry.
+#
 # Note: the `supply-chain` CI job does NOT run `cargo deny check licenses`
 # (it runs `advisories` only, per the Makefile); this section is a
 # local-only guard. If you want to enforce licenses in CI, add a step
@@ -114,6 +124,22 @@ allow = [
 # either remove the unused entry (preferred) or add a comment
 # explaining why we expect it to appear (e.g. for a build-dependency
 # cargo-deny's default tree doesn't traverse).
+#
+# To regenerate the list (run after a `cargo update` or a Tauri
+# release that adds/removes transitive deps), see what cargo-deny
+# now considers "encountered" by parsing its `errors[rejected]`
+# blocks -- the license identifier is the quoted string on the
+# `license = "..."` line:
+#   cargo deny check licenses 2>&1 \
+#     | grep -E 'license = "' \
+#     | sed -E 's/.*license = "([^"]+)".*/\1/' \
+#     | sort -u
+# Then dedupe compound SPDX expressions to their component identifiers
+# (e.g. "MIT OR Apache-2.0" -> add both "MIT" and "Apache-2.0")
+# before adding to the allow list. The simpler regex used in the
+# earlier draft of this comment (`[A-Z]...`) silently dropped entries
+# like `0BSD` (digit-leading) and `Apache-2.0 WITH LLVM-exception`
+# (contains spaces).
 confidence-threshold = 0.8
 
 # [bans]                # Uncomment to ban specific crates or duplicates
