@@ -1,6 +1,23 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* dark mode is class-toggled. The "system" value (plan-defined) means
+   follow the OS by default and let the user override in Settings by
+   adding/removing `.dark` on <html>. The actual system-following logic
+   lives in ui/src/main.tsx via matchMedia (TODO when we add the toggle).
+   Tailwind 4 uses a custom-variant to opt into class-based dark mode. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-bg-base: #0f172a;
+  --color-bg-panel: #1e293b;
+  --color-bg-rail: #0b1220;
+  --color-accent: #22d3ee;
+  --color-accent-muted: #0e7490;
+  --color-scope-in: #22c55e;
+  --color-scope-out: #64748b;
+  --color-scope-blocked: #ef4444;
+  --color-scope-unscoped: #eab308;
+}
 
 @layer base {
   html, body, #root { height: 100%; }
