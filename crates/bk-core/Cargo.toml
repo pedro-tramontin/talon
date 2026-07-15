@@ -20,6 +20,9 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+http = { workspace = true }
+url = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 # Test-only deps would go here

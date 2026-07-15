@@ -48,15 +48,19 @@ impl<T> std::fmt::Display for Id<T> {
 // `#[derive]` on a generic struct adds an implicit `T: Trait` bound to
 // the impl, and we want `Id<Project> == Id<Project>` to work without
 // the caller having to thread bounds manually.
-#[derive(Debug, PartialEq, Eq)]
+//
+// `Clone` is required for the same reason: any `#[derive(Clone)]` on
+// a containing struct (e.g. `Request`, `ExchangeMeta`) propagates a
+// `T: Clone` bound to `Id<T>`. These are zero-sized so `Clone` is free.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project;
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exchange;
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag;
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note;
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuzzJob;
 
 pub type ProjectId = Id<Project>;
