@@ -13,3 +13,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# Tests construct `HttpExchange` literals with `chrono::Utc::now()` and
+# use `tempfile::TempDir` for an isolated engine config dir. Production
+# code doesn't need either, so they live in dev-deps only.
+chrono = { workspace = true }
+tempfile = "3.10"

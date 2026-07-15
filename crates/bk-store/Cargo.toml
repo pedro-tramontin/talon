@@ -10,7 +10,7 @@ description = "Talon SQLite project storage: connection pool, schema migrations,
 
 [dependencies]
 bk-core = { workspace = true }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 r2d2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -25,6 +25,12 @@ pub enum StoreError {
     #[error("invalid input: {0}")]
     Invalid(String),
 
+    #[error("serialization error: {0}")]
+    Serde(#[from] serde_json::Error),
+
+    #[error("uuid error: {0}")]
+    Uuid(#[from] uuid::Error),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
