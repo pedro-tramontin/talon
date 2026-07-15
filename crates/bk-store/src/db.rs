@@ -66,14 +66,28 @@ pub fn open(db_path: impl AsRef<Path>) -> Result<DbPool> {
 }
 
 /// Resolves a project's `db_filename` to a full path under the projects dir.
+/// The filename is validated to prevent path traversal: a `db_filename`
+/// of `"../../etc/passwd"` would otherwise escape the projects dir.
+/// Only the suffix is caller-controlled; `project_id` and `projects_dir`
+/// come from the engine and are trusted.
 pub fn project_path(
     projects_dir: impl AsRef<Path>,
     project_id: ProjectId,
     db_filename: &str,
-) -> PathBuf {
-    projects_dir
+) -> std::result::Result<PathBuf, StoreError> {
+    if db_filename.is_empty()
+        || db_filename.contains('/')
+        || db_filename.contains('\\')
+        || db_filename.contains("..")
+        || db_filename.contains('\0')
+    {
+        return Err(StoreError::Invalid(format!(
+            "invalid db_filename: {db_filename:?}"
+        )));
+    }
+    Ok(projects_dir
         .as_ref()
-        .join(format!("{}-{}", project_id, db_filename))
+        .join(format!("{}-{}", project_id, db_filename)))
 }
 
 /// Configure a freshly opened connection. These PRAGMAs are essential:
@@ -153,5 +167,15 @@ mod tests {
             "unexpected journal_mode: {}",
             mode
         );
+    }
+
+    #[test]
+    fn project_path_rejects_path_traversal() {
+        let tmp = TempDir::new().unwrap();
+        let pid = ProjectId::new();
+        assert!(project_path(tmp.path(), pid.clone(), "../etc/passwd").is_err());
+        assert!(project_path(tmp.path(), pid.clone(), "subdir/file.db").is_err());
+        assert!(project_path(tmp.path(), pid.clone(), "").is_err());
+        assert!(project_path(tmp.path(), pid, "ok.db").is_ok());
     }
 }

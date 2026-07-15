@@ -111,10 +111,13 @@ pub enum MatchReplaceTarget {
     ResponseBody,
 }
 
-// Tiny inline regex helper so we don't pull the full `regex` crate into
-// bk-core. The full crate is a 1MB+ dep with Unicode tables; for the
-// scope rules we just need basic matching. The full `regex` crate is
-// used in bk-store and bk-engine where we need capture groups.
+// Wrapper that exposes only `is_match` and `new` from the `regex` crate.
+// This intentionally limits the API surface so callers in `bk-core` can
+// only do whole-string matching — no capture groups, no replacement, no
+// iteration. The full `regex` crate is used in `bk-store` and `bk-engine`
+// for the more demanding match/replace logic; we still depend on it
+// here, so the size cost is unchanged. The shim exists to make the
+// "bk-core is match-only" constraint a compile-time boundary.
 mod regex_shim {
     pub struct Regex(regex::Regex);
     impl Regex {

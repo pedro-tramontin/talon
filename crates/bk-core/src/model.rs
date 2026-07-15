@@ -76,17 +76,34 @@ mod header_map_serde {
     use serde::{Deserializer, Serializer};
     use std::fmt;
 
+    /// Escape a byte slice as ASCII, turning every non-printable byte
+    /// into `\\xNN`. Used to make non-UTF-8 header values serializable.
+    fn escape_non_utf8(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len());
+        for &b in bytes {
+            if b.is_ascii_graphic() || b == b' ' {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("\\x{b:02x}"));
+            }
+        }
+        out
+    }
+
     /// Serialize as `{"name": [value, value, ...], ...}`.
+    /// Non-UTF-8 header values (rare in practice — RFC 7230 requires
+    /// header values to be ASCII) are encoded as `\\xNN` escape
+    /// sequences so the round-trip preserves the bytes.
     pub fn serialize<S: Serializer>(m: &HeaderMap, ser: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         // Group values by header name; `http::HeaderMap` iter is (Name, Value).
         let mut grouped: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         for (name, value) in m.iter() {
-            let v = value
-                .to_str()
-                .map_err(serde::ser::Error::custom)?
-                .to_owned();
+            let v = match value.to_str() {
+                Ok(s) => s.to_owned(),
+                Err(_) => escape_non_utf8(value.as_bytes()),
+            };
             grouped.entry(name.as_str().to_owned()).or_default().push(v);
         }
         let mut map = ser.serialize_map(Some(grouped.len()))?;
@@ -169,7 +186,13 @@ impl Body {
         match self {
             Body::Complete { data } => data.len(),
             Body::Empty => 0,
-            Body::Streaming { content_length } => content_length.map(|n| n as usize).unwrap_or(0),
+            // u64 -> usize: clamp to usize::MAX instead of silently
+            // truncating. A 4GB+ body on a 32-bit target is not
+            // representable, but reporting usize::MAX is at least
+            // monotonic and obvious, not a small wrong number.
+            Body::Streaming { content_length } => content_length
+                .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+                .unwrap_or(0),
         }
     }
 }
