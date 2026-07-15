@@ -60,6 +60,9 @@ bytes = { version = "1.7", features = ["serde"] }
 # Regex
 regex = "1.10"
 
+# Connection pool (for bk-store)
+r2d2 = "0.8"
+
 [profile.release]
 lto = "thin"           # good size/speed tradeoff, fast link
 codegen-units = 1

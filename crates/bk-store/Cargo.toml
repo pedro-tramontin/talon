@@ -2,13 +2,21 @@
 name = "bk-store"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Talon SQLite project storage: connection pool, schema migrations, exchanges CRUD, FTS5 search."
 
 [dependencies]
 bk-core = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.10"

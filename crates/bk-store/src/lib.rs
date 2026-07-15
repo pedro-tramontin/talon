@@ -4,16 +4,9 @@
 //! FTS5 search. The HTTP proxy (Phase 3) and fuzzer (Phase 7) will both
 //! write to this store.
 
-pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
+pub mod db;
+pub mod error;
+pub mod migrations;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn version_is_semver() {
-        assert!(version().contains('.'));
-    }
-}
+pub use db::{open, project_path, DbPool};
+pub use error::{Result, StoreError};
