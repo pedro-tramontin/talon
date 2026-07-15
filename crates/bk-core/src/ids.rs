@@ -87,15 +87,17 @@ impl<T> FromStr for Id<T> {
 // or `#[derive(Copy)]` on a containing struct (e.g. `Request`,
 // `ExchangeMeta`) propagates a `T: Clone` or `T: Copy` bound to
 // `Id<T>`. These are zero-sized so `Clone` and `Copy` are free.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// `Hash` is required so `Id<T>` can be used as a `HashMap` key (the
+// engine stores `HashMap<ProjectId, Arc<DbPool>>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Project;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Exchange;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Tag;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Note;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FuzzJob;
 
 pub type ProjectId = Id<Project>;

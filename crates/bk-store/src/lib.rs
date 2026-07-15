@@ -9,6 +9,7 @@ pub mod error;
 pub mod exchanges;
 pub mod fts;
 pub mod migrations;
+pub mod projects;
 pub mod schema;
 pub mod tags;
 
