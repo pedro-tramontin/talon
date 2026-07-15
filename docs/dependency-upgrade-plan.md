@@ -51,6 +51,16 @@ All of these are confirmed compatible with **Tauri 2.11.5 (Rust) + @tauri-apps/a
 
 These are major-version bumps that need **config-file or code changes** in the repo, not just `package.json` edits. They get their own PR so a config regression can't get hidden in a "bump deps" diff.
 
+> **Update (2026-07-15):** PR #9 (`phase-02-dep-cleanup`) folds the three
+> non-breaking majors below into one PR with three commits
+> (`113c30e` jsdom 29 → `4a98285` eslint 10 → `b2b5762` tailwind 4). The fourth
+> one, **TypeScript 5 → 7**, is blocked upstream and is **not** in #9:
+> `typescript-eslint@8` reads `typescript.module.Cjs` which TS 7 removed, so
+> the eslint flat-config parser crashes. There is no `typescript-eslint@9`
+> published (canary is `8.64.1-alpha.3`, still 8.x). A `globals.css.d.ts`
+> shim fixes `tsc -b` but the crash is in `typescript-estree`, so the shim
+> does not help lint. Re-attempt when `typescript-eslint@9` ships.
+
 ### Tailwind 3 → 4
 
 - **What changes**: CSS-first config model. `tailwind.config.js` (with `content: [...]`, `theme.extend`, etc.) is replaced by `@theme {}` blocks inside the CSS file. `postcss.config.js` is replaced by a Vite plugin or `@tailwindcss/postcss`.
