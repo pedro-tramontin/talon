@@ -2,7 +2,7 @@
 
 A fast, modern web-security toolkit for solo bug bounty hunters. Proxy, replay, sitemap, fuzzer.
 
-**Status:** Phase 1 — project skeleton. The Rust workspace, Tauri 2 shell, React UI, and CI pipeline are wired up. Subsequent phases add the actual security tooling (proxy, replay, etc.) on top of this foundation.
+**Status:** Phase 2 — project model + SQLite storage. The `bk-core` types, `bk-store` SQLite layer (schema v2, FTS5 search), and `bk-engine` orchestrator are wired up with 61 passing tests. Phase 3 (the MITM proxy core) is next.
 
 ## Requirements
 
