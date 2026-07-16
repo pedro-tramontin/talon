@@ -6,7 +6,6 @@ use anyhow::Context;
 use bk_proxy::cli::{resolve_config_dir, Cli};
 use bk_proxy::{Proxy, ProxyConfig};
 use clap::Parser;
-use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -51,31 +50,14 @@ async fn main() -> ExitCode {
     // subscribe too.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let mut sigint = match signal(SignalKind::interrupt()) {
-        Ok(s) => s,
-        Err(e) => {
-            error!(error = %e, "failed to install SIGINT handler");
-            return ExitCode::from(1);
-        }
-    };
-    let mut sigterm = match signal(SignalKind::terminate()) {
-        Ok(s) => s,
-        Err(e) => {
-            error!(error = %e, "failed to install SIGTERM handler");
-            return ExitCode::from(1);
-        }
-    };
-
     let proxy = Proxy::new(config);
 
-    // Spawn a small task that flips the shutdown bool on either
-    // signal. We do this as a task so the main future can keep
-    // driving the proxy.
+    // Spawn a small task that flips the shutdown bool when the OS
+    // tells us to stop. Unix gets SIGINT + SIGTERM; Windows gets
+    // Ctrl-C only (no portable SIGTERM equivalent in
+    // `tokio::signal::windows`).
     let signal_task = tokio::spawn(async move {
-        tokio::select! {
-            _ = sigint.recv() => info!("received SIGINT"),
-            _ = sigterm.recv() => info!("received SIGTERM"),
-        }
+        wait_for_shutdown().await;
         let _ = shutdown_tx.send(true);
     });
 
@@ -92,6 +74,47 @@ async fn main() -> ExitCode {
         Err(e) => {
             error!(error = %e, "bk-proxy exited with error");
             ExitCode::from(1)
+        }
+    }
+}
+
+/// Block until the OS tells us to shut down. Unix gets SIGINT and
+/// SIGTERM; Windows gets Ctrl-C only.
+async fn wait_for_shutdown() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Ok(s) => s,
+            Err(e) => {
+                error!(error = %e, "failed to install SIGINT handler");
+                return;
+            }
+        };
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(e) => {
+                error!(error = %e, "failed to install SIGTERM handler");
+                return;
+            }
+        };
+        tokio::select! {
+            _ = sigint.recv() => info!("received SIGINT"),
+            _ = sigterm.recv() => info!("received SIGTERM"),
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // Ctrl-C is the only universally-portable shutdown signal
+        // Windows exposes. `tokio::signal::windows::ctrl_break()`
+        // exists for services but isn't user-friendly; the
+        // overwhelming majority of Windows users will close with
+        // Ctrl-C (or the window-close button, which the Tauri shell
+        // in Phase 4 will translate to a graceful shutdown signal).
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => info!("received Ctrl-C"),
+            Err(e) => error!(error = %e, "failed to install Ctrl-C handler"),
         }
     }
 }

@@ -44,7 +44,8 @@ use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair,
     KeyUsagePurpose, SerialNumber,
 };
-use rustls_pemfile::Item;
+use rustls_pki_types::pem::PemObject as _;
+use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -363,24 +364,19 @@ fn build_root_params(
 }
 
 /// Parse a PEM-encoded X.509 certificate to DER bytes.
+///
+/// Uses `rustls_pki_types::pem::PemObject` — the rustls team's
+/// recommended replacement for the deprecated `rustls-pemfile` crate
+/// (RUSTSEC-2025-0134). `PemObject` is implemented for
+/// `CertificateDer<'static>`, so a single `from_pem_slice` call
+/// decodes and validates the first cert in the buffer.
 fn parse_pem_to_der(pem: &str, src_path: &Path) -> Result<Vec<u8>, CaError> {
-    // `rustls-pemfile` reads one item at a time. We only care about
-    // the first X.509 certificate in the file.
-    match rustls_pemfile::read_one_from_slice(pem.as_bytes()) {
-        Ok(Some((Item::X509Certificate(der), _rest))) => Ok(der.to_vec()),
-        Ok(Some((other, _rest))) => Err(CaError::ParseFile {
-            path: src_path.to_path_buf(),
-            message: format!("expected X.509 certificate, found {other:?}"),
-        }),
-        Ok(None) => Err(CaError::ParseFile {
-            path: src_path.to_path_buf(),
-            message: "no PEM block found".to_string(),
-        }),
-        Err(e) => Err(CaError::ParseFile {
+    CertificateDer::from_pem_slice(pem.as_bytes())
+        .map(|der| der.to_vec())
+        .map_err(|e| CaError::ParseFile {
             path: src_path.to_path_buf(),
             message: format!("{e:?}"),
-        }),
-    }
+        })
 }
 
 /// Compute the SHA-256 fingerprint of a DER cert, formatted as
