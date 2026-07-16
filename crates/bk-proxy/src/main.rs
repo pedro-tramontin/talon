@@ -57,7 +57,22 @@ async fn main() -> ExitCode {
     // subscribe too.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let proxy = Proxy::new(config);
+    // Load (or generate) the root CA. The CA files live in
+    // `<config_dir>/ca/`; on first run we generate, on subsequent
+    // runs we load. The §3.3 spec requires the real fingerprint
+    // (not the §3.1/§3.2 placeholder) in `ProxyStarted`.
+    let root_ca = match bk_proxy::RootCa::load_or_create(&config_dir) {
+        Ok(ca) => std::sync::Arc::new(ca),
+        Err(e) => {
+            eprintln!(
+                "bk-proxy: failed to load or create root CA in {}: {e}",
+                config_dir.join("ca").display()
+            );
+            return ExitCode::from(2);
+        }
+    };
+
+    let proxy = Proxy::new(config, root_ca);
 
     // Spawn a small task that flips the shutdown bool when the OS
     // tells us to stop. Unix gets SIGINT + SIGTERM; Windows gets
