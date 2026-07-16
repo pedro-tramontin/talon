@@ -116,6 +116,8 @@ allow = [
   "MPL-2.0",                   # webview2-com via Tauri
   "Unlicense",                 # aho-corasick
   "LGPL-2.1-or-later",         # libdbus-sys via Tauri
+  "ISC",                       # ring, aws-lc-rs via rustls 0.23 (bk-proxy, Phase 3 §3.2)
+  "CDLA-Permissive-2.0",       # webpki-roots 0.26/1.0 (Mozilla CA bundle, bk-proxy Phase 3 §3.2)
 ]
 # When you add a new license, add a comment naming the crate that
 # needs it and whether it's direct or transitive. If the allow list

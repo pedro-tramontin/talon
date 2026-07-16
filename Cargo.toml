@@ -10,6 +10,7 @@ members = [
     "crates/bk-core",
     "crates/bk-store",
     "crates/bk-engine",
+    "crates/bk-proxy",
     "app",
 ]
 
@@ -31,6 +32,9 @@ tokio = { version = "1.40", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 async-trait = "0.1"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -62,6 +66,31 @@ regex = "1.10"
 
 # Connection pool (for bk-store)
 r2d2 = "0.8"
+
+# CA generation (used by bk-proxy for dynamic root + leaf signing)
+rcgen = "0.14"
+
+# Config file parsing (used by bk-proxy)
+toml = "0.8"
+
+# TLS
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-pki-types = "1.15"
+webpki = "0.22"
+webpki-roots = "0.26"
+
+# HTTP client/server (used by bk-proxy for MITM)
+hyper = { version = "1.5", features = ["server", "client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "client", "client-legacy", "http1", "http2"] }
+http-body-util = "0.1"
+tower-service = "0.3"
+
+# Cert fingerprinting (used by bk-proxy for the CA fingerprint)
+sha2 = "0.10"
+
+# Date handling (used by rcgen for cert validity)
+time = { version = "0.3", features = ["std"] }
 
 [profile.release]
 lto = "thin"           # good size/speed tradeoff, fast link
