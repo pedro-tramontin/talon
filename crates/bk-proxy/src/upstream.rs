@@ -86,32 +86,45 @@ pub async fn forward_request_with_tls_config(
 ) -> Result<Response<UpstreamResponseBody>> {
     // Acquire a pooled connection (or open a fresh one if the
     // pool is empty for this host). The `PooledConn` is RAII:
-    // dropping it returns the conn to the pool (or discards it
-    // if `mark_errored` was called).
+    // dropping it returns the conn + its driver to the pool
+    // (H1 keep-alive) or discards it if `mark_errored` was
+    // called.
+    //
+    // **We do NOT take the `SendRequest` out of `pooled`.** The
+    // `UpstreamBody` type is a `StreamBody<Pin<Box<dyn Stream>>>`,
+    // which means `SendRequest<UpstreamBody>` does NOT implement
+    // `Clone` (the inner body is a trait object — cloning would
+    // require cloning the stream, which is not possible for a
+    // trait object). The fix: keep the `PooledConn` whole, call
+    // `pooled.send_request(req).await` (a method on `PooledConn`
+    // that takes `&mut self` and forwards to the inner sender),
+    // then drop `pooled` to return to the pool. This is the
+    // API the pool was always meant to have.
     let mut pooled = pool
         .connect(host)
         .await
         .with_context(|| format!("upstream pool connect to {host} failed"))?;
-    let mut sender = pooled
-        .sender
-        .take()
-        .ok_or_else(|| anyhow!("pool returned a conn with no sender"))?;
 
-    // Send the request and await the response head.
-    let result = sender.send_request(request).await;
+    // Send the request and await the response head. The sender
+    // stays inside `pooled` for the duration of the call.
+    let result = pooled.send_request(request).await;
 
     let response = match result {
         Ok(r) => r,
         Err(e) => {
-            // Mark the conn as errored so Drop discards it.
+            // Mark the conn as errored so Drop discards it
+            // (sender + driver dropped, no return-to-pool).
             pooled.mark_errored();
             return Err(anyhow!("upstream request to {host} failed: {e}"));
         }
     };
 
     debug!(host = %host, status = %response.status(), "upstream response received");
-    // `pooled` is dropped here, returning the conn to the pool
-    // (H1 keep-alive).
+    // `pooled` is dropped here. With `mark_errored` not called,
+    // `Drop` returns the conn + its driver to the pool. The
+    // next `connect()` will either reuse the conn (if the
+    // driver is still running) or evict it (if the upstream
+    // closed the conn in the meantime).
     Ok(response)
 }
 

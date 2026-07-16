@@ -33,12 +33,21 @@
 //!
 //! ## Connection lifetime
 //!
-//! - `Pool::connect(host)` returns a `PooledConn`.
+//! - `Pool::connect(host)` returns a [`PooledConn`].
 //! - The user calls `sender.send_request(request).await` on the
-//!   `PooledConn::sender` field.
+//!   [`PooledConn::sender`] field.
 //! - The user reads the response body and either drops the
-//!   `PooledConn` (returning it to the pool) or calls
-//!   `PooledConn::errored()` to mark it for discard.
+//!   [`PooledConn`] (returning the conn + its driver to the pool)
+//!   or calls [`PooledConn::mark_errored`] to mark it for discard.
+//!
+//! Each [`PooledConn`] carries both the hyper `SendRequest` and
+//! the `JoinHandle` of the background task that drives the
+//! underlying `hyper::client::conn::http1::Connection`. The
+//! `Drop` impl returns both to the pool on success. The pool uses
+//! the driver's `is_finished()` state on the next `connect()` to
+//! detect conns whose upstream closed them while idle (the
+//! connection task exits when the IO errors, so `is_finished()`
+//! is true → conn is dropped, not reused).
 //!
 //! Idle connections older than `PoolConfig::idle_timeout` are
 //! evicted on the next `connect` call (lazy cleanup; no background
@@ -56,20 +65,28 @@
 //!   string; an idle conn to `example.com` is never served to a
 //!   request for `evil.com` (different SNI, different TLS session).
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-
 use anyhow::{anyhow, Context, Result};
+use hyper::body::Incoming;
 use hyper::client::conn::http1::SendRequest;
+use hyper::Response;
 use hyper_util::rt::TokioIo;
 use rustls::ClientConfig;
 use rustls_pki_types::ServerName;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tracing::debug;
 
 use crate::upstream::UpstreamBody;
+
+/// Re-export of the response body type returned by
+/// [`PooledConn::send_request`]. The type comes from hyper's
+/// `Incoming` body (the upstream side uses the same hyper
+/// client connection as the proxy's h2 server side, so the
+/// response body type is fixed by hyper, not by us).
+pub type UpstreamResponseBody = Incoming;
 
 /// Pool configuration.
 #[derive(Debug, Clone)]
@@ -124,13 +141,37 @@ struct IdleConn {
 
 /// A handle to a pooled upstream connection. RAII: when dropped, the
 /// conn is either returned to the pool (on success) or discarded
-/// (if `mark_errored()` was called or the conn errored during use).
+/// (if [`PooledConn::mark_errored`] was called or the conn errored
+/// during use).
+///
+/// **API note:** the pool's [`PooledConn::sender`] field is
+/// `Option<SendRequest<UpstreamBody>>` but the production code
+/// should NOT take the sender out via `pooled.sender.take()`. The
+/// `UpstreamBody` is a `StreamBody<Pin<Box<dyn Stream>>>` — a trait
+/// object body — and `SendRequest<UpstreamBody>: !Clone` (cloning
+/// the sender would require cloning the underlying stream, which
+/// is impossible for a trait object). Instead, use
+/// [`PooledConn::send_request`] which takes `&mut self` and
+/// forwards to the inner sender, then drop the `PooledConn` to
+/// return to the pool.
 pub struct PooledConn {
-    /// The hyper H1 sender half. The user calls
-    /// `sender.send_request(req).await` and reads the response
-    /// body. `SendRequest` is `Clone` so multiple requests can
-    /// share a single conn (H1 keep-alive).
-    pub sender: Option<SendRequest<UpstreamBody>>,
+    /// The hyper H1 sender half. The production code path uses
+    /// [`PooledConn::send_request`] (which calls
+    /// `sender.send_request(&mut self)`). The field is
+    /// `Option<...>` so `Drop` can take it when returning the
+    /// conn to the pool; tests + bookkeeping may inspect it
+    /// directly via `as_ref()`.
+    sender: Option<SendRequest<UpstreamBody>>,
+    /// The background task that drives the underlying
+    /// `hyper::client::conn::http1::Connection`. Lives for the
+    /// entire lifetime of the conn (created when the conn is
+    /// opened, dropped when the conn is discarded). The pool
+    /// uses `is_finished()` on this handle to detect conns
+    /// whose upstream closed them while idle.
+    ///
+    /// `None` once the conn has been returned to the pool (or
+    /// discarded) — `Drop` takes it.
+    conn_driver: Option<tokio::task::JoinHandle<()>>,
     /// The host this conn is for (used by `Drop` to return the
     /// conn to the right per-host queue).
     host: String,
@@ -148,6 +189,30 @@ impl PooledConn {
     pub fn mark_errored(&mut self) {
         self.errored = true;
     }
+
+    /// Send a request over the pooled conn and await the
+    /// response head. Thin wrapper around the inner
+    /// `SendRequest::send_request` so callers don't need to
+    /// `Option::take` the sender (which would break
+    /// `Drop`'s return-to-pool path).
+    ///
+    /// **Caller contract:** the returned `Response` borrows
+    /// the request body that was sent — the caller should
+    /// drop the `PooledConn` only AFTER the response body
+    /// is fully consumed (or the conn will be returned to
+    /// the pool while a frame is mid-flight, which is
+    /// fine for the H1 keep-alive case but is worth
+    /// documenting).
+    pub async fn send_request(
+        &mut self,
+        request: http::Request<UpstreamBody>,
+    ) -> Result<Response<UpstreamResponseBody>, hyper::Error> {
+        let sender = self
+            .sender
+            .as_mut()
+            .expect("PooledConn::sender is None — Drop already ran or this is a stale handle");
+        sender.send_request(request).await
+    }
 }
 
 impl Drop for PooledConn {
@@ -156,16 +221,37 @@ impl Drop for PooledConn {
             return;
         };
         let Some(sender) = self.sender.take() else {
+            // `sender` was already taken by the caller (e.g. via
+            // `pooled.sender.take()` in `upstream::forward_request`).
+            // Without the sender, the conn is unusable. Drop the
+            // driver too so the conn doesn't leak.
+            if let Some(driver) = self.conn_driver.take() {
+                drop(driver);
+            }
+            let mut stats = pool.stats.lock().unwrap();
+            stats.dropped_conns += 1;
             return;
         };
         let host = self.host.clone();
 
         if self.errored {
-            // Discard — increment dropped counter and return.
+            // Discard — drop the driver, increment counter.
+            if let Some(driver) = self.conn_driver.take() {
+                drop(driver);
+            }
             let mut stats = pool.stats.lock().unwrap();
             stats.dropped_conns += 1;
             return;
         }
+
+        // Take the driver out so we can store it on the IdleConn.
+        // If the driver is somehow missing (shouldn't happen — the
+        // pool always sets it), drop the conn.
+        let Some(conn_driver) = self.conn_driver.take() else {
+            let mut stats = pool.stats.lock().unwrap();
+            stats.dropped_conns += 1;
+            return;
+        };
 
         // Try to return to the pool. The conn driver task is still
         // running; if it later errors (e.g. the upstream closed
@@ -185,13 +271,19 @@ impl Drop for PooledConn {
         }
         // Cap at max_idle_per_host.
         if queue.len() >= pool.config.max_idle_per_host {
+            // Pool full — drop the conn and the driver. The
+            // driver's task will exit on its own when the IO
+            // closes (or when the TCP+TLS conn is closed by the
+            // upstream). We don't `abort()` — that's a hard
+            // cancel that the user's `Drop` might not want.
+            drop(conn_driver);
             let mut stats = pool.stats.lock().unwrap();
             stats.dropped_conns += 1;
             return;
         }
         queue.push_back(IdleConn {
             sender,
-            conn_driver: tokio::spawn(async move {}),
+            conn_driver,
             last_used: now,
         });
     }
@@ -227,14 +319,15 @@ impl Pool {
         }
     }
 
-    /// Acquire a connection to `(host, port)`. Returns an idle
-    /// conn from the pool if one is available, otherwise opens a
-    /// fresh one. The `port` argument is currently advisory
-    /// (the pool uses `PoolConfig::default_port`); §3.3.5 keeps
-    /// the "always 443" rule.
+    /// Acquire a connection to `host`. Returns an idle conn
+    /// from the pool if one is available, otherwise opens a
+    /// fresh one. The port comes from
+    /// [`PoolConfig::default_port`] (always 443 in production;
+    /// tests may override).
     ///
-    /// The returned `PooledConn` is RAII: drop it to return to
-    /// the pool, or call `mark_errored()` first to discard.
+    /// The returned [`PooledConn`] is RAII: drop it to return to
+    /// the pool (with its connection-driver task handle), or
+    /// call [`PooledConn::mark_errored`] first to discard.
     pub async fn connect(&self, host: &str) -> Result<PooledConn> {
         let port = self.inner.config.default_port;
         // Try to grab an idle conn first.
@@ -244,6 +337,10 @@ impl Pool {
                 while let Some(idle) = queue.pop_front() {
                     // Skip stale conns (older than `idle_timeout`).
                     if idle.last_used.elapsed() >= self.inner.config.idle_timeout {
+                        // The driver has been running the conn
+                        // for at least `idle_timeout`; let it
+                        // drop naturally on Drop. Don't abort.
+                        drop(idle.conn_driver);
                         let mut stats = self.inner.stats.lock().unwrap();
                         stats.stale_evictions += 1;
                         continue;
@@ -251,14 +348,19 @@ impl Pool {
                     // Check if the conn driver already errored
                     // (the upstream closed the conn while idle).
                     if idle.conn_driver.is_finished() {
+                        drop(idle.conn_driver);
                         let mut stats = self.inner.stats.lock().unwrap();
                         stats.dropped_conns += 1;
                         continue;
                     }
                     let mut stats = self.inner.stats.lock().unwrap();
                     stats.reused_conns += 1;
+                    // Move the real driver (NOT a no-op stub) into
+                    // the new `PooledConn` so it lives until the
+                    // user drops the conn.
                     return Ok(PooledConn {
                         sender: Some(idle.sender),
+                        conn_driver: Some(idle.conn_driver),
                         host: host.to_string(),
                         pool: Some(self.inner.clone()),
                         errored: false,
@@ -285,10 +387,14 @@ impl Pool {
             .await
             .with_context(|| "upstream HTTP/1.1 handshake failed")?;
 
-        // Drive the conn in the background. If it errors, we log
-        // and the next `connect()` call will observe the error
-        // and discard any idle conn we might have stored.
-        let _conn_driver = tokio::spawn(async move {
+        // Drive the conn in the background. Store the REAL handle
+        // in the `PooledConn` so `Drop` can return it to the pool
+        // and the pool can `is_finished()`-check it on reuse.
+        // (The pre-fix code dropped the handle with `_conn_driver`,
+        // which made the pool dead code: every "idle" conn's
+        // driver finished immediately, the pool always thought
+        // the conn was finished, and never reused anything.)
+        let conn_driver = tokio::spawn(async move {
             if let Err(e) = connection.await {
                 debug!(error = %e, "upstream pooled connection errored");
             }
@@ -299,6 +405,7 @@ impl Pool {
 
         Ok(PooledConn {
             sender: Some(sender),
+            conn_driver: Some(conn_driver),
             host: host.to_string(),
             pool: Some(self.inner.clone()),
             errored: false,
@@ -400,10 +507,49 @@ mod tests {
             .map(|(p, _)| p)
             .unwrap_or(src);
         assert!(
-            production_src.contains("Pool") || production_src.contains("pool"),
-            "upstream.rs must use the Pool from upstream_pool. The pre-§3.3.5 \
-             code opened a fresh TCP+TLS conn on every forward_request call; \
-             §3.3.5 replaces that with a per-host pool."
+            production_src.contains("pooled.send_request("),
+            "upstream.rs must call pooled.send_request() on the PooledConn. \
+             The pre-fix code took the sender out of the PooledConn via \
+             `pooled.sender.take()`, which made Drop early-return and the \
+             pool never reuse anything. The §3.3.5 fix routes the request \
+             through a method on PooledConn that takes &mut self."
+        );
+    }
+
+    /// Source-grep guard test: the `PooledConn::Drop` impl must
+    /// not store a no-op `tokio::spawn(async move {})` driver.
+    /// The pre-fix code did this, which made every "idle" conn
+    /// look "finished" to `is_finished()`, and the pool's
+    /// `reused_conns` counter never advanced. The fix: `Drop`
+    /// takes the real `conn_driver` from the `PooledConn` (the
+    /// one that was set in `Pool::connect` or the reuse path)
+    /// and stores it on the `IdleConn`. **Scope to production
+    /// code** so the test's own docstring (which mentions the
+    /// bug pattern for teaching) doesn't false-positive.
+    #[test]
+    fn drop_does_not_store_no_op_driver() {
+        let src = include_str!("upstream_pool.rs");
+        let production_src = src
+            .split_once("#[cfg(test)]")
+            .map(|(p, _)| p)
+            .unwrap_or(src);
+        // The bug pattern: `conn_driver: tokio::spawn(async move {})`
+        // inside the Drop impl (or anywhere storing a no-op
+        // driver). The fix: store the real driver from the
+        // `PooledConn` field, not a fresh `tokio::spawn(async move {})`.
+        // We use the call-site syntax (the colon-equals) to
+        // avoid matching a docstring that happens to mention
+        // `tokio::spawn`.
+        assert!(
+            !production_src.contains("conn_driver: tokio::spawn(async move {})"),
+            "upstream_pool.rs Drop impl must NOT store a no-op \
+             driver (tokio::spawn of an empty async block). The \
+             pre-§3.3.5-fix code did this, which made the pool \
+             dead code: every idle conn's driver finished \
+             immediately, the pool's is_finished() check on \
+             reuse always returned true, and the conn was \
+             dropped instead of reused. The fix: Drop takes \
+             the real driver from the PooledConn field."
         );
     }
 }
