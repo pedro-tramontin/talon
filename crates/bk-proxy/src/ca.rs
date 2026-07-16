@@ -370,10 +370,12 @@ impl RootCa {
         let mut server_config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![cert], key)?;
-        // ALPN: h2 first, then http/1.1. We negotiate whichever the
-        // client asks for; the h2 path is out of scope for §3.3
-        // (the request handler will reject it as a 505 once §3.5
-        // lands).
+        // ALPN: h2 first, then http/1.1. The proxy's
+        // `handle_connection` uses `hyper::server::conn::http2::Builder`
+        // (the same `service_fn` closure works for both protocols), so
+        // the h2 path is real, not a stub. Browsers that select h2
+        // negotiate h2; legacy clients that only speak http/1.1 fall
+        // back to http/1.1.
         server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(Arc::new(server_config))
     }

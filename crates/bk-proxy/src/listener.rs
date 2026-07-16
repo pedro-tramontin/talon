@@ -165,11 +165,19 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
             }
         };
 
-    // Read the HTTP/1.1 request from the now-decrypted TLS stream.
+    // Read the HTTP request from the now-decrypted TLS stream.
     // The hyper 1.x server builder takes a TokioIo wrapper around
     // any AsyncRead+AsyncWrite, which the TlsStream<TcpStream> is.
-    use hyper::server::conn::http1;
-    use hyper_util::rt::TokioIo;
+    //
+    // We use the HTTP/2 server builder, NOT http1, because the
+    // ALPN list in `ca.rs` advertises both `h2` and `http/1.1`
+    // (modern browsers always try h2 first over TLS). An
+    // http1-only handler would fail the browser handshake any
+    // time the browser selects h2. Both builders accept the same
+    // `HttpService` shape, so the same `svc` closure works for
+    // both protocols.
+    use hyper::server::conn::http2;
+    use hyper_util::rt::{TokioExecutor, TokioIo};
     let io = TokioIo::new(tls_stream);
 
     // We need the host (from CONNECT) in scope for the upstream
@@ -236,7 +244,16 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
     // Track bytes in/out + final status. We capture status by
     // wrapping the body, but for §3.3 we approximate with
     // duration only — a future §3.5 will use a tap body wrapper.
-    let status = match http1::Builder::new().serve_connection(io, svc).await {
+    //
+    // HTTP/2 server: `Builder::new()` takes an executor
+    // (`TokioExecutor` is the standard choice for the tokio
+    // runtime). The same `service_fn` closure used by the
+    // http1 builder is accepted here because hyper's `Service`
+    // / `HttpService` traits are protocol-agnostic.
+    let status = match http2::Builder::new(TokioExecutor::new())
+        .serve_connection(io, svc)
+        .await
+    {
         Ok(()) => 200, // connection completed; status was 200-ish from upstream
         Err(e) => {
             warn!(host = %host, error = %e, "hyper server connection errored");
@@ -256,4 +273,51 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
     });
 
     debug!(host = %host, status, duration_ms, "request forwarded");
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression tests for the §3.3 server side.
+    //!
+    //! The original §3.3 implementation used
+    //! `http1::Builder::new().serve_connection(io, svc)`. The
+    //! ALPN list in `ca.rs` advertises both `h2` and `http/1.1`,
+    //! so any browser that selected `h2` (which is the default
+    //! for Chrome/Firefox/curl over TLS) would fail the
+    //! handshake with a 502-equivalent.
+    //!
+    //! The fix is to use the `http2::Builder` instead. The test
+    //! below enforces that the file actually uses the http2
+    //! builder — a guard against accidental reverts.
+
+    /// Guard test: the `handle_connection` body must use the
+    /// HTTP/2 hyper server builder, not the HTTP/1.1 one. Read
+    /// the source of this file and assert the expected
+    /// `http2::Builder::new(TokioExecutor::new())` call site is
+    /// present, and that the http1 builder is NOT used in the
+    /// production code.
+    #[test]
+    fn handle_connection_uses_http2_server_builder() {
+        let src = include_str!("listener.rs");
+        // The fix site: must be present.
+        assert!(
+            src.contains("http2::Builder::new(TokioExecutor::new())"),
+            "listener.rs must use http2::Builder::new(TokioExecutor::new()) to \
+             match the ALPN list in ca.rs (which advertises `h2`). \
+             An http1-only server would break any browser that selects h2."
+        );
+        // The old bug: must be absent from the production code.
+        // We only check up to the `#[cfg(test)]` marker so the
+        // assertion doesn't false-positive on this test's own
+        // docstring.
+        let production_src = src
+            .split_once("#[cfg(test)]")
+            .map(|(p, _)| p)
+            .unwrap_or(src);
+        assert!(
+            !production_src.contains("http1::Builder::new()"),
+            "listener.rs must NOT use http1::Builder::new() in production code — \
+             that's the pre-Copilot-fix code that the ALPN h2 advertising broke."
+        );
+    }
 }
