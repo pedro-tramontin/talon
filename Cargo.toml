@@ -10,6 +10,7 @@ members = [
     "crates/bk-core",
     "crates/bk-store",
     "crates/bk-engine",
+    "crates/bk-proxy",
     "app",
 ]
 
@@ -31,6 +32,9 @@ tokio = { version = "1.40", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 async-trait = "0.1"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
