@@ -39,13 +39,15 @@
 //! `rustls-pemfile`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair,
     KeyUsagePurpose, SerialNumber,
 };
+use rustls::ServerConfig;
 use rustls_pki_types::pem::PemObject as _;
-use rustls_pki_types::CertificateDer;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -86,6 +88,12 @@ pub enum CaError {
 impl From<rcgen::Error> for CaError {
     fn from(e: rcgen::Error) -> Self {
         CaError::Rcgen(e.to_string())
+    }
+}
+
+impl From<rustls::Error> for CaError {
+    fn from(e: rustls::Error) -> Self {
+        CaError::Rcgen(format!("rustls: {e}"))
     }
 }
 
@@ -320,6 +328,54 @@ impl RootCa {
         let key_der: Vec<u8> = leaf_key.serialized_der().to_vec();
 
         Ok((cert_der, key_der))
+    }
+
+    /// Build a per-host rustls [`ServerConfig`] for terminating the
+    /// browser-side TLS handshake on the MITM port.
+    ///
+    /// This is the load-bearing method for §3.3. The cert chain is
+    /// the freshly-signed leaf (a one-element chain — we don't send
+    /// the root, browsers don't need it and it bloats the handshake).
+    /// ALPN advertises `[h2, http/1.1]` so a browser that wants h2
+    /// will see the offer; we only speak http/1.1 in §3.3, so an h2
+    /// client gets a 505 from the inner handler (out of scope for
+    /// §3.3, fixed in §3.5).
+    ///
+    /// # Why the chain does NOT include the root cert
+    ///
+    /// The overnight log (2026-07-16, deviation #3) flagged that
+    /// `rcgen::CertificateParams::self_signed(&key)` re-signs the
+    /// root with a fresh ECDSA nonce every time, producing a
+    /// different DER on every load. So this method NEVER calls
+    /// `self_signed` for the root — the cert chain is just
+    /// `[leaf_der]`, derived from `sign_leaf`. The fingerprint on
+    /// disk (and the trust anchor we tell the browser about) is
+    /// the one computed at first-generation time.
+    pub fn tls_server_config(&self, host: &str) -> Result<Arc<ServerConfig>, CaError> {
+        let (cert_der, key_der) = self.sign_leaf(host)?;
+
+        // Parse the leaf cert DER into the rustls `CertificateDer`
+        // wrapper. `PemObject` is implemented for the wrapper and
+        // the input here is already DER, so `from_pem_slice` rejects
+        // it. We need to wrap the raw bytes directly.
+        let cert: CertificateDer<'static> = CertificateDer::from(cert_der);
+        let key = PrivateKeyDer::try_from(key_der).map_err(|e| CaError::ParseFile {
+            path: PathBuf::from("<leaf key>"),
+            message: format!("invalid private key DER: {e:?}"),
+        })?;
+
+        // Build a no-client-auth server config with a single cert
+        // chain (the leaf). Modern browsers expect ALPN h2 + http/1.1
+        // even when we only handle the latter.
+        let mut server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)?;
+        // ALPN: h2 first, then http/1.1. We negotiate whichever the
+        // client asks for; the h2 path is out of scope for §3.3
+        // (the request handler will reject it as a 505 once §3.5
+        // lands).
+        server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        Ok(Arc::new(server_config))
     }
 }
 

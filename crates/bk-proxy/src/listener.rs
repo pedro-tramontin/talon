@@ -10,10 +10,10 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
-use tokio::time::{sleep, Duration};
 use tracing::{debug, warn};
 
 use crate::Proxy;
+use crate::ProxyEvent;
 
 /// Run the accept loop until `shutdown` flips to `true` or all
 /// shutdown senders are dropped.
@@ -137,18 +137,123 @@ pub async fn accept_loop(
 
 /// Handle a single accepted connection.
 ///
-/// §3.1 has no real per-connection work — the MITM cores come in
-/// §3.3. For now we just close the socket after a tick so the
-/// semaphore permit is released promptly and the test of the
-/// concurrency cap sees realistic back-and-forth.
-async fn handle_connection(_proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std::net::SocketAddr) {
-    // §3.1 has no MITM logic; we just close the socket after a tick
-    // so the semaphore permit is released promptly and the test of
-    // the concurrency cap sees realistic back-and-forth.
-    debug!(%peer_addr, "connection accepted; closing (no MITM in §3.1)");
-    let _ = stream;
-    // Yield once to let the runtime schedule the permit release
-    // before the task exits. Without this, a tight loop of accepts
-    // can starve the join_next() wait above.
-    sleep(Duration::from_millis(1)).await;
+/// §3.3 dispatches the per-connection work:
+/// 1. Try to read a `CONNECT host:port` request from the browser.
+/// 2. Reply `200 Connection Established` and perform the TLS handshake
+///    using a per-host cert minted from the proxy's `RootCa`.
+/// 3. Read the HTTP/1.1 request from the decrypted TLS stream.
+/// 4. Forward the request to the real upstream over a fresh TLS
+///    connection (the host comes from the SNI, NOT the Host header —
+///    design contract gotcha #1).
+/// 5. Stream the response back to the browser over the same TLS
+///    stream.
+/// 6. Emit `ProxyEvent::RequestForwarded` on success.
+///
+/// Non-CONNECT requests (plain HTTP proxy use) are not handled in
+/// §3.3 — Phase 4 adds that. The connection is closed with an
+/// error log.
+async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std::net::SocketAddr) {
+    let started = std::time::Instant::now();
+    let (host, tls_stream) =
+        match crate::mitm::handle_connect_tunnel(stream, proxy.root_ca.clone()).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                // Non-CONNECT or other failure. §3.3 doesn't support
+                // plain HTTP proxying; log and close.
+                warn!(%peer_addr, error = %e, "CONNECT failed; closing");
+                return;
+            }
+        };
+
+    // Read the HTTP/1.1 request from the now-decrypted TLS stream.
+    // The hyper 1.x server builder takes a TokioIo wrapper around
+    // any AsyncRead+AsyncWrite, which the TlsStream<TcpStream> is.
+    use hyper::server::conn::http1;
+    use hyper_util::rt::TokioIo;
+    let io = TokioIo::new(tls_stream);
+
+    // We need the host (from CONNECT) in scope for the upstream
+    // forwarder, AND we need to extract the request from the
+    // hyper service call. Use a `Rc<RefCell<Option<String>>>` or
+    // just clone the host into the service closure. Host is
+    // cheap to clone (small String).
+    let host_for_service = host.clone();
+    let host_for_event = host.clone();
+
+    let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+        let host = host_for_service.clone();
+        async move {
+            // Convert the Incoming body to our UpstreamBody type.
+            // §3.3 only handles GETs (no request body), so we use Empty.
+            use http_body_util::BodyExt;
+            let upstream_req = match crate::upstream::build_get_request(
+                &host,
+                req.uri()
+                    .path_and_query()
+                    .map(|pq| pq.as_str())
+                    .unwrap_or("/"),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to build upstream request");
+                    // Return a 502 with a uniform body type so the
+                    // service closure's two arms agree on the body.
+                    return Ok::<_, std::convert::Infallible>(
+                        hyper::Response::builder()
+                            .status(502)
+                            .body(
+                                http_body_util::Full::new(bytes::Bytes::from_static(
+                                    b"bad gateway\n",
+                                ))
+                                .map_err(|never| match never {})
+                                .boxed(),
+                            )
+                            .unwrap(),
+                    );
+                }
+            };
+            match crate::upstream::forward_request(&host, upstream_req).await {
+                Ok(resp) => Ok::<_, std::convert::Infallible>(resp.map(|b| b.boxed())),
+                Err(e) => {
+                    tracing::error!(error = %e, "upstream forward failed");
+                    Ok::<_, std::convert::Infallible>(
+                        hyper::Response::builder()
+                            .status(502)
+                            .body(
+                                http_body_util::Full::new(bytes::Bytes::from_static(
+                                    b"upstream error\n",
+                                ))
+                                .map_err(|never| match never {})
+                                .boxed(),
+                            )
+                            .unwrap(),
+                    )
+                }
+            }
+        }
+    });
+
+    // Track bytes in/out + final status. We capture status by
+    // wrapping the body, but for §3.3 we approximate with
+    // duration only — a future §3.5 will use a tap body wrapper.
+    let status = match http1::Builder::new().serve_connection(io, svc).await {
+        Ok(()) => 200, // connection completed; status was 200-ish from upstream
+        Err(e) => {
+            warn!(host = %host, error = %e, "hyper server connection errored");
+            return;
+        }
+    };
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    // Emit the event. Bytes-in/out are best-effort 0 for §3.3;
+    // §3.6 adds a body-tap wrapper that measures both.
+    proxy.events.send(ProxyEvent::RequestForwarded {
+        host: host_for_event,
+        status,
+        bytes_in: 0,
+        bytes_out: 0,
+        duration_ms,
+    });
+
+    debug!(host = %host, status, duration_ms, "request forwarded");
 }

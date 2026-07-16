@@ -17,6 +17,8 @@ pub mod cli;
 pub mod config;
 pub mod events;
 pub mod listener;
+pub mod mitm;
+pub mod upstream;
 
 use std::sync::Arc;
 
@@ -33,24 +35,31 @@ pub use events::{ProxyEvent, ProxyEventBus, StopReason};
 ///
 /// §3.1 ships a skeleton: it owns its [`ProxyConfig`] and an event bus,
 /// binds a TCP listener, and dispatches accepted sockets to a
-/// [`tokio::sync::Semaphore`]-capped [`tokio::task::JoinSet`]. The
-/// `ca` and `engine` fields will be added in §3.2 and §3.4.
+/// [`tokio::sync::Semaphore`]-capped [`tokio::task::JoinSet`]. §3.2
+/// adds the [`RootCa`] (used by §3.3 to mint per-host leaf certs
+/// for TLS termination).
 pub struct Proxy {
     /// The runtime configuration.
     pub config: ProxyConfig,
+    /// The dynamic root CA used to mint per-host leaf certs.
+    /// `Arc<RootCa>` so the spawned connection tasks can share it.
+    pub root_ca: Arc<RootCa>,
     /// The event bus that surfaces lifecycle + per-connection events to
     /// other components (notably the Tauri UI in §3.5).
     pub events: ProxyEventBus,
 }
 
 impl Proxy {
-    /// Build a new [`Proxy`] from a config.
+    /// Build a new [`Proxy`] from a config and a [`RootCa`].
     ///
+    /// The CA is wrapped in `Arc` so the spawned connection tasks can
+    /// share it without re-loading the cert/key for every connection.
     /// The event bus is created lazily here so the constructor stays
-    /// infallible. In §3.2 this will also load or generate the CA.
-    pub fn new(config: ProxyConfig) -> Self {
+    /// infallible.
+    pub fn new(config: ProxyConfig, root_ca: Arc<RootCa>) -> Self {
         Self {
             config,
+            root_ca,
             events: ProxyEventBus::new(),
         }
     }
@@ -83,8 +92,9 @@ impl Proxy {
             .local_addr()
             .context("bound TCP listener had no local_addr")?;
 
-        // §3.2 will replace the placeholder with a real fingerprint.
-        let ca_fingerprint = "(ca pending §3.2)".to_string();
+        // §3.3 wires the real `RootCa::fingerprint()` into the
+        // `ProxyStarted` event. The §3.1/§3.2 placeholder is gone.
+        let ca_fingerprint = proxy.root_ca.fingerprint().to_string();
 
         info!(
             listener = %local_addr,
@@ -157,6 +167,7 @@ mod tests {
     use tokio::time::{sleep, timeout, Instant};
 
     use super::{listener, Proxy};
+    use crate::ca::RootCa;
     use crate::config::ProxyConfig;
 
     fn free_addr() -> SocketAddr {
@@ -171,13 +182,18 @@ mod tests {
         addr
     }
 
+    fn root_ca_for_test() -> Arc<RootCa> {
+        let tmp = tempfile::tempdir().unwrap();
+        Arc::new(RootCa::load_or_create(tmp.path()).unwrap())
+    }
+
     fn proxy_with_addr(addr: SocketAddr, max_connections: usize) -> Proxy {
         let cfg = ProxyConfig {
             listener_addr: addr,
             max_concurrent_connections: max_connections,
             ..ProxyConfig::default()
         };
-        Proxy::new(cfg)
+        Proxy::new(cfg, root_ca_for_test())
     }
 
     #[tokio::test]
@@ -195,12 +211,16 @@ mod tests {
         });
 
         // Open a client connection and send 1 byte. The accept loop
-        // should hand it off to a spawned task and the kernel will see
-        // the write complete.
+        // hands it off to a spawned task. §3.3's `handle_connection`
+        // reads a CONNECT request; the 1 byte isn't a valid request
+        // and the client then closes the write side, so the next
+        // read returns EOF and the handler returns.
         let mut client = TcpStream::connect(addr).await.unwrap();
         client.write_all(&[0x42]).await.unwrap();
+        client.shutdown().await.unwrap();
 
-        // Give the runtime a moment to schedule the accept.
+        // Give the runtime a moment to schedule the accept + the
+        // handler's read-to-EOF.
         sleep(Duration::from_millis(50)).await;
 
         // Trigger shutdown and verify the loop returns within 1s.
@@ -240,11 +260,28 @@ mod tests {
             clients.push(c);
         }
 
-        // Let the loop process the first 2 accepts and park on the
-        // semaphore for the rest.
-        sleep(Duration::from_millis(100)).await;
+        // Shut down each client (close the write side) so the
+        // server's `handle_connection` reads return EOF and the
+        // handlers complete; then trigger the proxy's shutdown.
+        // The order matters: the §3.3 handler reads a CONNECT
+        // request, and a client that never sends data + never
+        // closes would hang the handler indefinitely.
+        let mut drains: JoinSet<()> = JoinSet::new();
+        for mut c in clients {
+            drains.spawn(async move {
+                let _ = c.shutdown().await;
+            });
+        }
+        while drains.join_next().await.is_some() {}
 
-        // At this point the task must still be alive (not finished).
+        // Small wait so the server's read-to-EOF on the now-closed
+        // clients can propagate and the handlers return.
+        sleep(Duration::from_millis(50)).await;
+
+        // The task must still be alive (not finished) until we send
+        // the explicit shutdown signal — the handlers have all
+        // returned, the accept loop is parked on the inner
+        // `listener.accept().await` waiting for new connections.
         assert!(
             !task.is_finished(),
             "accept_loop exited prematurely with cap=2 and 5 clients"
@@ -257,15 +294,6 @@ mod tests {
             .expect("accept_loop did not exit within 1s after shutdown")
             .expect("accept_loop task panicked")
             .expect("accept_loop returned an error");
-
-        // Clean up our clients.
-        let mut drains: JoinSet<()> = JoinSet::new();
-        for mut c in clients {
-            drains.spawn(async move {
-                let _ = c.shutdown().await;
-            });
-        }
-        while drains.join_next().await.is_some() {}
     }
 
     #[tokio::test]
@@ -352,28 +380,36 @@ mod tests {
         });
 
         // Open 3 client connections. With cap=1, the first client is
-        // accepted and its handler runs for ~50ms (the 1ms sleep in
-        // handle_connection plus a margin to be safe). The remaining
-        // 2 clients sit in the kernel's accept queue; the loop must
-        // be parked waiting for the first handler to release its
-        // permit, not actively pulling the 2nd/3rd clients.
+        // accepted and its handler is reading the CONNECT request
+        // (blocked on the read until the client sends data or closes).
+        // The remaining 2 clients sit in the kernel's accept queue;
+        // the loop must be parked waiting for the first handler to
+        // release its permit.
         let mut clients = Vec::new();
         for _ in 0..3 {
             let c = TcpStream::connect(addr).await.unwrap();
             clients.push(c);
         }
 
-        // Give the loop time to accept #1, start the handler, and
-        // park waiting for the permit.
+        // Give the loop time to accept #1 and start the handler.
         sleep(Duration::from_millis(50)).await;
 
-        // The task must still be alive (parked on `acquire_owned()`
-        // because the cap is saturated by handler #1). If the permit
-        // were acquired *after* accept, the loop would have pulled
-        // client #2 and parked on the semaphore, but the
-        // `join_next()` JoinSet would still have an in-flight task.
-        // Both interpretations show "alive" — but we additionally
-        // assert the task is *not* in a panic.
+        // Close the clients so the handlers' CONNECT reads return
+        // EOF and the handlers complete.
+        let mut drains: JoinSet<()> = JoinSet::new();
+        for mut c in clients {
+            drains.spawn(async move {
+                let _ = c.shutdown().await;
+            });
+        }
+        while drains.join_next().await.is_some() {}
+
+        // Small wait for the read-to-EOF to propagate.
+        sleep(Duration::from_millis(50)).await;
+
+        // The task must still be alive (the handlers have all
+        // returned, the accept loop is parked on the next
+        // `listener.accept().await` or the permit wait).
         assert!(
             !task.is_finished(),
             "accept_loop exited prematurely with cap=1 and 3 clients"
@@ -386,15 +422,6 @@ mod tests {
             .expect("accept_loop did not exit within 1s after shutdown")
             .expect("accept_loop task panicked")
             .expect("accept_loop returned an error");
-
-        // Clean up our clients.
-        let mut drains: JoinSet<()> = JoinSet::new();
-        for mut c in clients {
-            drains.spawn(async move {
-                let _ = c.shutdown().await;
-            });
-        }
-        while drains.join_next().await.is_some() {}
     }
 
     // -----------------------------------------------------------------
@@ -412,8 +439,6 @@ mod tests {
     //    `ca.fingerprint` file is written and matches what
     //    `ca.fingerprint()` returns.
     // -----------------------------------------------------------------
-
-    use crate::ca::RootCa;
 
     #[test]
     fn root_ca_load_or_create_persists_across_calls() {
