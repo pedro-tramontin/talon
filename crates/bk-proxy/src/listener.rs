@@ -198,52 +198,26 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
     let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
         let host = host.clone();
         let events = events.clone();
+        let upstream_pool = proxy.upstream_pool.clone();
         let started = std::time::Instant::now();
         async move {
-            // §3.3 only forwards GETs. POST/PUT/etc. would
-            // require forwarding the request body, which the
-            // current `UpstreamBody` type (`Empty<Bytes>`) can't
-            // represent. Until body forwarding lands, reject
-            // non-GETs with a clear 501 so the browser doesn't
-            // silently see a GET (the old bug — POST became GET,
-            // which corrupts state on the server side).
-            if req.method() != hyper::Method::GET {
-                tracing::warn!(
-                    method = %req.method(),
-                    "rejecting non-GET request; only forwards GETs"
-                );
-                let resp = hyper::Response::builder()
-                    .status(501)
-                    .header("content-type", "text/plain; charset=utf-8")
-                    .body(
-                        http_body_util::Full::new(bytes::Bytes::from_static(
-                            b"not implemented: bk-proxy only forwards GET requests (POST/PUT/etc. land in a follow-up)\n",
-                        ))
-                        .map_err(|never| match never {})
-                        .boxed(),
-                    )
-                    .unwrap();
-                // Emit a 501 event so the UI/logger sees the
-                // rejection (without it, keep-alive rejections
-                // would be silent).
-                events.send(ProxyEvent::RequestForwarded {
-                    host: host.clone(),
-                    status: 501,
-                    bytes_in: 0,
-                    bytes_out: 0,
-                    duration_ms: started.elapsed().as_millis() as u64,
-                });
-                return Ok::<_, std::convert::Infallible>(resp);
-            }
-
-            // Build the upstream request (always GET; method is
-            // fixed by the `UpstreamBody` body type alias).
-            let upstream_req = match crate::upstream::build_get_request(
+            // §3.3.5: non-GET requests are now forwarded (the
+            // 501-on-non-GET band-aid was deleted when the body
+            // streaming work landed). The streaming `UpstreamBody`
+            // carries the request body frame-by-frame from the
+            // browser's `Incoming` to the upstream.
+            let method = req.method().clone();
+            let path_and_query = req
+                .uri()
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/")
+                .to_string();
+            let upstream_req = match crate::upstream::build_request(
+                method.clone(),
                 &host,
-                req.uri()
-                    .path_and_query()
-                    .map(|pq| pq.as_str())
-                    .unwrap_or("/"),
+                &path_and_query,
+                crate::upstream::build_body_from_incoming(req.into_body()),
             ) {
                 Ok(r) => r,
                 Err(e) => {
@@ -267,7 +241,7 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
                 }
             };
 
-            match crate::upstream::forward_request(&host, upstream_req).await {
+            match crate::upstream::forward_request(&host, upstream_req, &upstream_pool).await {
                 Ok(resp) => {
                     // Capture the actual upstream status (not
                     // hard-coded 200 — the old bug). Emit
@@ -373,22 +347,40 @@ mod tests {
         );
     }
 
-    /// Guard test: the service closure must reject non-GET
-    /// requests with a 501 instead of silently forwarding them
-    /// as GET. Regression for Copilot review thread 3593770829
-    /// (PR #17).
+    /// Guard test: the service closure must forward non-GET
+    /// requests (POST, PUT, PATCH, DELETE) instead of rejecting
+    /// them. Regression for the §3.3.5 deletion of the
+    /// 501-on-non-GET band-aid (the pre-§3.3.5 code had a
+    /// `if req.method() != hyper::Method::GET` check that
+    /// returned 501 for everything except GET; §3.3.5 removed
+    /// that check and now forwards any method, streaming the
+    /// body via `build_body_from_incoming`).
     #[test]
-    fn handle_connection_rejects_non_get_with_501() {
+    fn handle_connection_forwards_non_get_methods() {
         let src = include_str!("listener.rs");
         let production_src = src
             .split_once("#[cfg(test)]")
             .map(|(p, _)| p)
             .unwrap_or(src);
+        // The 501-on-non-GET band-aid must be gone.
         assert!(
-            production_src.contains("req.method() != hyper::Method::GET"),
-            "listener.rs must check req.method() != GET and return 501 for \
-             non-GET requests. The pre-Copilot-fix code always called \
-             build_get_request, so a POST became a GET — silent corruption."
+            !production_src.contains("req.method() != hyper::Method::GET"),
+            "listener.rs must NOT contain the 501-on-non-GET band-aid. \
+             §3.3.5 deleted it; non-GET requests are now forwarded with \
+             a streaming body via build_body_from_incoming."
+        );
+        // The new code path must be in place: build_request (not
+        // build_get_request, which is GET-only).
+        assert!(
+            production_src.contains("upstream::build_request("),
+            "listener.rs must call upstream::build_request() to forward \
+             any method, not upstream::build_get_request() (which is GET-only)."
+        );
+        // The body adapter must be wired.
+        assert!(
+            production_src.contains("build_body_from_incoming(req.into_body())"),
+            "listener.rs must convert the request body to a streaming \
+             UpstreamBody via build_body_from_incoming(req.into_body())."
         );
     }
 

@@ -84,8 +84,9 @@ webpki-roots = "0.26"
 hyper = { version = "1.5", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "client", "client-legacy", "http1", "http2"] }
 http-body-util = "0.1"
+http-body = "1.0"
 tower-service = "0.3"
-
+async-stream = "0.3"
 # Cert fingerprinting (used by bk-proxy for the CA fingerprint)
 sha2 = "0.10"
 

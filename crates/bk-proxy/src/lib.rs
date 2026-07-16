@@ -19,6 +19,7 @@ pub mod events;
 pub mod listener;
 pub mod mitm;
 pub mod upstream;
+pub mod upstream_pool;
 
 use std::sync::Arc;
 
@@ -30,6 +31,7 @@ use tracing::{info, warn};
 pub use ca::RootCa;
 pub use config::ProxyConfig;
 pub use events::{ProxyEvent, ProxyEventBus, StopReason};
+pub use upstream_pool::{Pool, PoolConfig};
 
 /// The Talon MITM proxy.
 ///
@@ -37,7 +39,9 @@ pub use events::{ProxyEvent, ProxyEventBus, StopReason};
 /// binds a TCP listener, and dispatches accepted sockets to a
 /// [`tokio::sync::Semaphore`]-capped [`tokio::task::JoinSet`]. §3.2
 /// adds the [`RootCa`] (used by §3.3 to mint per-host leaf certs
-/// for TLS termination).
+/// for TLS termination). §3.3.5 adds the [`Pool`] (per-host
+/// upstream TLS connection pool — replaces the per-request
+/// fresh handshake of §3.3).
 pub struct Proxy {
     /// The runtime configuration.
     pub config: ProxyConfig,
@@ -47,6 +51,10 @@ pub struct Proxy {
     /// The event bus that surfaces lifecycle + per-connection events to
     /// other components (notably the Tauri UI in §3.5).
     pub events: ProxyEventBus,
+    /// The per-host upstream connection pool. Holds the
+    /// `Arc<ClientConfig>` for upstream TLS verification. Shared
+    /// across all connection handlers via `Arc<Pool>`.
+    pub upstream_pool: Pool,
 }
 
 impl Proxy {
@@ -55,12 +63,35 @@ impl Proxy {
     /// The CA is wrapped in `Arc` so the spawned connection tasks can
     /// share it without re-loading the cert/key for every connection.
     /// The event bus is created lazily here so the constructor stays
-    /// infallible.
+    /// infallible. The upstream connection pool is constructed with
+    /// the default [`PoolConfig`] — `Proxy::new` does not take a
+    /// custom pool config; use [`Proxy::new_with_pool`] for that.
     pub fn new(config: ProxyConfig, root_ca: Arc<RootCa>) -> Self {
+        let tls_config = build_default_upstream_tls_config();
+        let upstream_pool = Pool::new(PoolConfig::default(), Arc::new(tls_config));
         Self {
             config,
             root_ca,
             events: ProxyEventBus::new(),
+            upstream_pool,
+        }
+    }
+
+    /// Like [`Proxy::new`] but with a custom [`PoolConfig`]. Use
+    /// this when you want to tune `max_idle_per_host` or
+    /// `idle_timeout`.
+    pub fn new_with_pool(
+        config: ProxyConfig,
+        root_ca: Arc<RootCa>,
+        pool_config: PoolConfig,
+    ) -> Self {
+        let tls_config = build_default_upstream_tls_config();
+        let upstream_pool = Pool::new(pool_config, Arc::new(tls_config));
+        Self {
+            config,
+            root_ca,
+            events: ProxyEventBus::new(),
+            upstream_pool,
         }
     }
 
@@ -139,6 +170,17 @@ impl Proxy {
 
         res
     }
+}
+
+/// Build the default upstream TLS config (Mozilla CA bundle via
+/// `webpki-roots`, no client auth). Used by [`Proxy::new`] to
+/// construct the upstream connection pool's shared `ClientConfig`.
+fn build_default_upstream_tls_config() -> rustls::ClientConfig {
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth()
 }
 
 #[cfg(test)]
