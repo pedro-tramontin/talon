@@ -7,7 +7,12 @@
 //! and the pipeline that turns a request into a stored exchange.
 
 #![deny(unsafe_code)]
+// Struct field docs are covered by struct-level docs; suppress the
+// per-field "missing documentation" warnings. See the same line in
+// `bk-core` for the rationale.
+#![allow(missing_docs)]
 
+pub mod ca;
 pub mod cli;
 pub mod config;
 pub mod events;
@@ -20,6 +25,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
+pub use ca::RootCa;
 pub use config::ProxyConfig;
 pub use events::{ProxyEvent, ProxyEventBus, StopReason};
 
@@ -283,6 +289,116 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(1),
             "accept_loop took {elapsed:?} to exit on shutdown; expected < 1s"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // §3.2 tests for the dynamic root CA.
+    //
+    // Three tests, all listed in the §3.2 contract:
+    //
+    // 1. `root_ca_load_or_create_persists_across_calls` — the second
+    //    call to load_or_create on the same dir must NOT regenerate
+    //    the CA; the fingerprint must match.
+    // 2. `root_ca_sign_leaf_produces_valid_x509_for_sni` — the leaf
+    //    DER parses as a valid X.509 with the SNI as a SAN, and it
+    //    chains to the root (same issuer DN, root signs the leaf).
+    // 3. `root_ca_persists_fingerprint_in_config_dir` — the
+    //    `ca.fingerprint` file is written and matches what
+    //    `ca.fingerprint()` returns.
+    // -----------------------------------------------------------------
+
+    use crate::ca::RootCa;
+
+    #[test]
+    fn root_ca_load_or_create_persists_across_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        // First call: must create the CA.
+        let ca1 = RootCa::load_or_create(dir).expect("first load_or_create failed");
+        let fp1 = ca1.fingerprint().to_string();
+
+        // Files must exist on disk.
+        for name in ["ca.crt.pem", "ca.key.pem", "ca.fingerprint", "ca.meta.toml"] {
+            let p = RootCa::ca_dir(dir).join(name);
+            assert!(
+                p.exists(),
+                "expected {} to exist after first load",
+                p.display()
+            );
+        }
+
+        // Second call: must reload, NOT regenerate.
+        let ca2 = RootCa::load_or_create(dir).expect("second load_or_create failed");
+        let fp2 = ca2.fingerprint().to_string();
+
+        assert_eq!(fp1, fp2, "fingerprint changed across load_or_create calls");
+    }
+
+    #[test]
+    fn root_ca_sign_leaf_produces_valid_x509_for_sni() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ca = RootCa::load_or_create(tmp.path()).unwrap();
+
+        let (cert_der, key_der) = ca
+            .sign_leaf("example.com")
+            .expect("sign_leaf failed for example.com");
+        assert!(!cert_der.is_empty(), "cert DER is empty");
+        assert!(!key_der.is_empty(), "key DER is empty");
+
+        // Parse the leaf cert. `x509-parser` is in `[dev-dependencies]`.
+        let (_, leaf) =
+            x509_parser::parse_x509_certificate(&cert_der).expect("leaf cert did not parse");
+        let leaf_subject = leaf.tbs_certificate.subject.to_string();
+
+        // The leaf must have example.com in its SAN extension.
+        let san_contains_example = leaf
+            .tbs_certificate
+            .extensions_map()
+            .expect("extensions_map failed")
+            .values()
+            .any(|ext| {
+                use x509_parser::prelude::GeneralName;
+                let parsed = ext.parsed_extension();
+                matches!(parsed, x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san)
+                    if san.general_names.iter().any(|gn| {
+                        matches!(gn, GeneralName::DNSName(name) if *name == "example.com")
+                    }))
+            });
+        assert!(
+            san_contains_example,
+            "leaf cert does not have example.com in SAN; subject={leaf_subject}"
+        );
+
+        // The leaf must be signed by the root — i.e. the leaf's
+        // `issuer` DN must match the root's `subject` DN.
+        let root_der = ca.root_cert_der();
+        let (_, root) =
+            x509_parser::parse_x509_certificate(&root_der).expect("root cert did not parse");
+        let root_subject = root.tbs_certificate.subject.to_string();
+        let leaf_issuer = leaf.tbs_certificate.issuer.to_string();
+
+        assert_eq!(
+            leaf_issuer, root_subject,
+            "leaf issuer {leaf_issuer:?} != root subject {root_subject:?}"
+        );
+    }
+
+    #[test]
+    fn root_ca_persists_fingerprint_in_config_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ca = RootCa::load_or_create(tmp.path()).unwrap();
+
+        let stored = std::fs::read_to_string(RootCa::ca_dir(tmp.path()).join("ca.fingerprint"))
+            .expect("ca.fingerprint missing on disk");
+        let stored = stored.trim();
+
+        assert_eq!(
+            stored,
+            ca.fingerprint(),
+            "fingerprint on disk ({stored}) != what the in-memory CA reports ({})",
+            ca.fingerprint()
         );
     }
 }
