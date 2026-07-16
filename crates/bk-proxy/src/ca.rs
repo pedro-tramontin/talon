@@ -305,10 +305,7 @@ impl RootCa {
         params.distinguished_name = DistinguishedName::new();
         params.distinguished_name.push(DnType::CommonName, sni);
         params.is_ca = IsCa::NoCa;
-        params.key_usages = vec![
-            KeyUsagePurpose::DigitalSignature,
-            KeyUsagePurpose::KeyEncipherment,
-        ];
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
         // 1 year. Browsers tolerate up to 398 days; we give ourselves
         // some headroom for clock skew and re-sign latency.

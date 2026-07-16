@@ -20,14 +20,15 @@ pub struct Cli {
     #[arg(long, env = "TALON_CONFIG_DIR", value_name = "DIR")]
     pub config_dir: Option<PathBuf>,
 
-    /// Address the TCP listener binds to.
-    #[arg(long, default_value = "127.0.0.1:8080", value_name = "ADDR")]
-    pub listen: SocketAddr,
+    /// Address the TCP listener binds to. Overrides `proxy.toml`.
+    #[arg(long, value_name = "ADDR")]
+    pub listen: Option<SocketAddr>,
 
     /// Maximum number of in-flight connections. Acts as a backpressure
     /// cap: when reached, the accept loop pauses until a slot frees up.
-    #[arg(long, default_value_t = 256, value_name = "N")]
-    pub max_connections: usize,
+    /// Overrides `proxy.toml`.
+    #[arg(long, value_name = "N")]
+    pub max_connections: Option<usize>,
 }
 
 /// Resolve the effective config dir, honouring the XDG fallback.

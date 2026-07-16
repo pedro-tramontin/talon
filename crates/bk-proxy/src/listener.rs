@@ -15,20 +15,20 @@ use tracing::{debug, warn};
 
 use crate::Proxy;
 
-/// Run the accept loop until `shutdown` flips to `true`.
+/// Run the accept loop until `shutdown` flips to `true` or all
+/// shutdown senders are dropped.
 ///
 /// Semantics:
-/// * Accepts are driven by `select!`ing on the listener and the
-///   shutdown signal — when the signal fires, the loop stops
-///   accepting new connections and waits for in-flight ones to
-///   finish.
-/// * The [`Semaphore`] caps the number of concurrent in-flight
-///   connection tasks. When the cap is hit, the next `accept` is
-///   deliberately not pulled off the listener until a permit frees
-///   up — this is the backpressure mechanism the tests exercise.
+/// * The [`Semaphore`] cap is honored *before* pulling a connection
+///   off the listener: the loop first awaits a permit, then accepts.
+///   When the cap is saturated, the kernel queue absorbs bursts and
+///   the listener is parked on `acquire_owned()` until a permit
+///   frees up — the backpressure behavior the tests exercise.
 /// * Each accepted connection is spawned as a task tracked by a
 ///   [`JoinSet`]. On shutdown we await the entire set so the process
 ///   doesn't exit with live sockets open.
+/// * The shutdown arm handles both `Ok(())` (value changed to `true`)
+///   and `Err(RecvError)` (all senders dropped) as graceful exits.
 pub async fn accept_loop(
     proxy: Arc<Proxy>,
     listener: TcpListener,
@@ -47,51 +47,77 @@ pub async fn accept_loop(
             break;
         }
 
-        tokio::select! {
+        // Wait for either a permit or a shutdown signal. The permit
+        // is the backpressure gate — without it we must not call
+        // `accept()`.
+        let permit = tokio::select! {
             biased;
 
-            // Honour shutdown first: even if a connection is ready,
-            // if the user hit Ctrl-C we stop accepting.
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
-                    debug!("shutdown signal received; stopping accept loop");
-                    break;
+            shutdown_res = shutdown.changed() => {
+                match shutdown_res {
+                    Ok(()) if *shutdown.borrow() => {
+                        debug!("shutdown signal received; stopping accept loop");
+                        break;
+                    }
+                    // Spurious change (same value) or senders dropped
+                    // mid-loop with no value set: treat as graceful
+                    // shutdown so we don't busy-loop. The `RecvError`
+                    // type is public but its constructor is private;
+                    // match on `Err(_)` instead.
+                    Ok(()) | Err(_) => {
+                        debug!("shutdown channel closed or stale; treating as shutdown");
+                        break;
+                    }
                 }
             }
 
-            // Try to accept a new connection.
-            accept_res = listener.accept() => {
-                let (stream, peer_addr) = match accept_res {
-                    Ok(pair) => pair,
-                    Err(e) => {
-                        // A transient accept error doesn't need to
-                        // kill the whole loop. Log and continue.
-                        warn!(error = %e, "accept error; continuing");
-                        continue;
-                    }
-                };
-
-                // Acquire a permit BEFORE spawning so the cap is
-                // honoured even if the spawned task is starved.
-                let permit = match conn_sem.clone().acquire_owned().await {
+            permit_res = conn_sem.clone().acquire_owned() => {
+                match permit_res {
                     Ok(p) => p,
                     Err(_) => {
                         // The semaphore is closed only if we close
-                        // it; we never do in §3.1. Treat this as a
-                        // fatal error.
+                        // it; we never do in §3.1. Treat as fatal.
                         warn!("connection semaphore closed unexpectedly");
                         break;
                     }
-                };
-
-                let proxy_for_task = proxy.clone();
-                in_flight.spawn(async move {
-                    handle_connection(proxy_for_task, stream, peer_addr).await;
-                    // Permit is released when this task ends.
-                    drop(permit);
-                });
+                }
             }
-        }
+        };
+
+        // Permit in hand. Now accept the next connection, but stay
+        // responsive to shutdown: if the user hits Ctrl-C while we're
+        // parked on accept, abandon the accept and loop back to the
+        // top (where the shutdown check at the start of the loop
+        // breaks us out cleanly).
+        let accept_res = tokio::select! {
+            biased;
+            _ = shutdown.changed() => {
+                // Drop the permit (it's released when `_permit` goes
+                // out of scope below) and loop.
+                drop(permit);
+                continue;
+            }
+            res = listener.accept() => res,
+        };
+
+        let (stream, peer_addr) = match accept_res {
+            Ok(pair) => pair,
+            Err(e) => {
+                // A transient accept error doesn't need to kill the
+                // whole loop. Log and continue; the permit is
+                // released when `_permit` goes out of scope.
+                drop(permit);
+                warn!(error = %e, "accept error; continuing");
+                continue;
+            }
+        };
+
+        let proxy_for_task = proxy.clone();
+        in_flight.spawn(async move {
+            handle_connection(proxy_for_task, stream, peer_addr).await;
+            // Permit is released when this task ends.
+            drop(permit);
+        });
     }
 
     // Drop the listener so no further accepts can queue.

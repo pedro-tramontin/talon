@@ -61,10 +61,12 @@ impl Proxy {
         self.events.clone()
     }
 
-    /// Bind the listener and run until `shutdown` flips to `true`.
+    /// Bind the listener and run until `shutdown` flips to `true` (or
+    /// all shutdown senders are dropped).
     ///
-    /// On a clean shutdown this returns `Ok(())`. On a fatal bind or
-    /// accept error it returns `Err`.
+    /// On a clean shutdown this returns `Ok(())`. On a bind error it
+    /// returns `Err`; transient accept errors are logged and the loop
+    /// continues.
     pub async fn run(self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
         let proxy = Arc::new(self);
 
@@ -290,6 +292,109 @@ mod tests {
             elapsed < Duration::from_secs(1),
             "accept_loop took {elapsed:?} to exit on shutdown; expected < 1s"
         );
+    }
+
+    /// Regression for the Copilot review thread on PR #16: when all
+    /// shutdown senders are dropped without ever calling `send(true)`,
+    /// the loop must still exit gracefully rather than busy-looping
+    /// on `shutdown.changed()` returning `Err(RecvError)` every
+    /// iteration.
+    #[tokio::test]
+    async fn accept_loop_exits_when_shutdown_senders_dropped() {
+        let addr = free_addr();
+        let proxy = Arc::new(proxy_with_addr(addr, 256));
+        let listener = TcpListener::bind(addr).await.unwrap();
+
+        // `tx` is created and immediately dropped; no `send(true)`
+        // ever happens, so the only way the loop can exit is by
+        // detecting the dropped sender on the `changed()` future.
+        let (tx, rx) = watch::channel(false);
+        drop(tx);
+
+        let start = Instant::now();
+        let inner = timeout(
+            Duration::from_secs(2),
+            listener::accept_loop(proxy, listener, rx),
+        )
+        .await
+        .expect("accept_loop did not exit within 2s after senders dropped (busy loop?)");
+
+        let elapsed = start.elapsed();
+        assert!(
+            inner.is_ok(),
+            "expected Ok(()) on dropped senders, got {inner:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "accept_loop took {elapsed:?} to exit on dropped senders; expected < 1s"
+        );
+    }
+
+    /// Sanity test: with cap=1 and 3 clients queued, the loop stays
+    /// alive (parked on permit/accept) and shuts down within 1s after
+    /// a shutdown signal. Doesn't directly assert the eager-accept
+    /// vs permit-first distinction (the §3.1 handler is too fast to
+    /// make that observable in a unit test), but it does cover the
+    /// shutdown-while-cap-saturated path which is the integration
+    /// contract the fix has to honor.
+    #[tokio::test]
+    async fn accept_loop_holds_backpressure_when_cap_saturated() {
+        let addr = free_addr();
+        let proxy = Arc::new(proxy_with_addr(addr, 1));
+        let listener = TcpListener::bind(addr).await.unwrap();
+
+        let (tx, rx) = watch::channel(false);
+
+        let proxy_for_loop = proxy.clone();
+        let rx_for_loop = rx.clone();
+        let task = tokio::spawn(async move {
+            listener::accept_loop(proxy_for_loop, listener, rx_for_loop).await
+        });
+
+        // Open 3 client connections. With cap=1, the first client is
+        // accepted and its handler runs for ~50ms (the 1ms sleep in
+        // handle_connection plus a margin to be safe). The remaining
+        // 2 clients sit in the kernel's accept queue; the loop must
+        // be parked waiting for the first handler to release its
+        // permit, not actively pulling the 2nd/3rd clients.
+        let mut clients = Vec::new();
+        for _ in 0..3 {
+            let c = TcpStream::connect(addr).await.unwrap();
+            clients.push(c);
+        }
+
+        // Give the loop time to accept #1, start the handler, and
+        // park waiting for the permit.
+        sleep(Duration::from_millis(50)).await;
+
+        // The task must still be alive (parked on `acquire_owned()`
+        // because the cap is saturated by handler #1). If the permit
+        // were acquired *after* accept, the loop would have pulled
+        // client #2 and parked on the semaphore, but the
+        // `join_next()` JoinSet would still have an in-flight task.
+        // Both interpretations show "alive" — but we additionally
+        // assert the task is *not* in a panic.
+        assert!(
+            !task.is_finished(),
+            "accept_loop exited prematurely with cap=1 and 3 clients"
+        );
+
+        // Shut down; the loop should drain and exit within 1s.
+        tx.send(true).unwrap();
+        timeout(Duration::from_secs(1), task)
+            .await
+            .expect("accept_loop did not exit within 1s after shutdown")
+            .expect("accept_loop task panicked")
+            .expect("accept_loop returned an error");
+
+        // Clean up our clients.
+        let mut drains: JoinSet<()> = JoinSet::new();
+        for mut c in clients {
+            drains.spawn(async move {
+                let _ = c.shutdown().await;
+            });
+        }
+        while drains.join_next().await.is_some() {}
     }
 
     // -----------------------------------------------------------------

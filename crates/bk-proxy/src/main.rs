@@ -29,12 +29,19 @@ async fn main() -> ExitCode {
         }
     };
 
-    // CLI flags override the file (last-wins for the four flags we expose).
-    config.listener_addr = cli.listen;
-    config.max_concurrent_connections = cli.max_connections;
-    // log_level from the file or default; we still want env to win if set.
-    if std::env::var_os("RUST_LOG").is_none() {
-        config.log_level = config.log_level.clone();
+    // CLI flags override `proxy.toml` only when explicitly passed.
+    // Without this check, the clap `default_value` would clobber any
+    // value the user set in their config file, making the file
+    // effectively dead.
+    if let Some(addr) = cli.listen {
+        config.listener_addr = addr;
+    }
+    if let Some(n) = cli.max_connections {
+        if n == 0 {
+            eprintln!("bk-proxy: --max-connections must be > 0, got {n}");
+            return ExitCode::from(2);
+        }
+        config.max_concurrent_connections = n;
     }
 
     // Build the env-filter from RUST_LOG or the config.

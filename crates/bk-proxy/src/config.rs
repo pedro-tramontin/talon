@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 /// without breaking older binaries. Missing fields fall back to the
 /// `Default` impl.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct ProxyConfigFile {
     /// Override the default `listener_addr`.
     pub listener_addr: Option<String>,
