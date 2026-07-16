@@ -30,15 +30,19 @@ use tokio_rustls::TlsConnector;
 use tracing::{debug, warn};
 
 /// The body type the proxy sends to the upstream. We use
-/// `http_body_util::Empty<Bytes>` for GETs (no request body) and
-/// `http_body_util::Full<Bytes>` for buffered uploads. For streaming
-/// uploads we'd use `http_body_util::StreamBody`; §3.3 doesn't ship
-/// a request body yet (the body is the response that the test
-/// origin sends, not what the browser uploads), so `Empty`/`Full` is
-/// fine for now.
+/// `http_body_util::Empty<Bytes>` for GETs (no request body).
+/// POST/PUT with bodies would need a different body type
+/// (`http_body_util::Full<Bytes>` for buffered uploads,
+/// `http_body_util::StreamBody` for streaming uploads), but
+/// §3.3 only forwards GETs — non-GET requests get a 501 from
+/// the listener. This `UpstreamBody` alias will be widened
+/// to an enum (or trait object) when body forwarding lands.
 pub type UpstreamBody = http_body_util::Empty<bytes::Bytes>;
 
-/// Streamed body type returned to the caller.
+/// Streamed body type returned by `forward_request`. This is the
+/// hyper `Incoming` body (the upstream side uses the same hyper
+/// client connection as the proxy's h2 server side, so the
+/// response body type is fixed by hyper, not by us).
 pub type UpstreamResponseBody = Incoming;
 
 /// Send a single HTTP/1.1 request to the upstream and return its

@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use http_body_util::BodyExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
@@ -153,7 +154,6 @@ pub async fn accept_loop(
 /// §3.3 — Phase 4 adds that. The connection is closed with an
 /// error log.
 async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std::net::SocketAddr) {
-    let started = std::time::Instant::now();
     let (host, tls_stream) =
         match crate::mitm::handle_connect_tunnel(stream, proxy.root_ca.clone()).await {
             Ok(pair) => pair,
@@ -180,20 +180,59 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
     use hyper_util::rt::{TokioExecutor, TokioIo};
     let io = TokioIo::new(tls_stream);
 
-    // We need the host (from CONNECT) in scope for the upstream
-    // forwarder, AND we need to extract the request from the
-    // hyper service call. Use a `Rc<RefCell<Option<String>>>` or
-    // just clone the host into the service closure. Host is
-    // cheap to clone (small String).
-    let host_for_service = host.clone();
-    let host_for_event = host.clone();
+    // The service closure needs `host` (from CONNECT) for the
+    // upstream forwarder and the event-bus handle to emit
+    // `RequestForwarded` per request. The closure is `Fn`
+    // (called multiple times for keep-alive on a single TLS
+    // tunnel), so we must clone both into it. We also need
+    // `host` for the connection-level debug log below, so the
+    // closure gets its own clone and we keep the original.
+    let events = proxy.events.clone();
+    let host_for_log = host.clone();
 
     let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-        let host = host_for_service.clone();
+        let host = host.clone();
+        let events = events.clone();
+        let started = std::time::Instant::now();
         async move {
-            // Convert the Incoming body to our UpstreamBody type.
-            // §3.3 only handles GETs (no request body), so we use Empty.
-            use http_body_util::BodyExt;
+            // §3.3 only forwards GETs. POST/PUT/etc. would
+            // require forwarding the request body, which the
+            // current `UpstreamBody` type (`Empty<Bytes>`) can't
+            // represent. Until body forwarding lands, reject
+            // non-GETs with a clear 501 so the browser doesn't
+            // silently see a GET (the old bug — POST became GET,
+            // which corrupts state on the server side).
+            if req.method() != hyper::Method::GET {
+                tracing::warn!(
+                    method = %req.method(),
+                    "rejecting non-GET request; only forwards GETs"
+                );
+                let resp = hyper::Response::builder()
+                    .status(501)
+                    .header("content-type", "text/plain; charset=utf-8")
+                    .body(
+                        http_body_util::Full::new(bytes::Bytes::from_static(
+                            b"not implemented: bk-proxy only forwards GET requests (POST/PUT/etc. land in a follow-up)\n",
+                        ))
+                        .map_err(|never| match never {})
+                        .boxed(),
+                    )
+                    .unwrap();
+                // Emit a 501 event so the UI/logger sees the
+                // rejection (without it, keep-alive rejections
+                // would be silent).
+                events.send(ProxyEvent::RequestForwarded {
+                    host: host.clone(),
+                    status: 501,
+                    bytes_in: 0,
+                    bytes_out: 0,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                });
+                return Ok::<_, std::convert::Infallible>(resp);
+            }
+
+            // Build the upstream request (always GET; method is
+            // fixed by the `UpstreamBody` body type alias).
             let upstream_req = match crate::upstream::build_get_request(
                 &host,
                 req.uri()
@@ -204,75 +243,83 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
                 Ok(r) => r,
                 Err(e) => {
                     tracing::error!(error = %e, "failed to build upstream request");
-                    // Return a 502 with a uniform body type so the
-                    // service closure's two arms agree on the body.
-                    return Ok::<_, std::convert::Infallible>(
-                        hyper::Response::builder()
-                            .status(502)
-                            .body(
-                                http_body_util::Full::new(bytes::Bytes::from_static(
-                                    b"bad gateway\n",
-                                ))
+                    let resp = hyper::Response::builder()
+                        .status(502)
+                        .body(
+                            http_body_util::Full::new(bytes::Bytes::from_static(b"bad gateway\n"))
                                 .map_err(|never| match never {})
                                 .boxed(),
-                            )
-                            .unwrap(),
-                    );
+                        )
+                        .unwrap();
+                    events.send(ProxyEvent::RequestForwarded {
+                        host: host.clone(),
+                        status: 502,
+                        bytes_in: 0,
+                        bytes_out: 0,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    });
+                    return Ok::<_, std::convert::Infallible>(resp);
                 }
             };
+
             match crate::upstream::forward_request(&host, upstream_req).await {
-                Ok(resp) => Ok::<_, std::convert::Infallible>(resp.map(|b| b.boxed())),
+                Ok(resp) => {
+                    // Capture the actual upstream status (not
+                    // hard-coded 200 — the old bug). Emit
+                    // per-request so keep-alive connections
+                    // don't batch N requests into one event.
+                    let status = resp.status().as_u16();
+                    events.send(ProxyEvent::RequestForwarded {
+                        host: host.clone(),
+                        status,
+                        bytes_in: 0,
+                        bytes_out: 0,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    });
+                    Ok::<_, std::convert::Infallible>(resp.map(|b| b.boxed()))
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "upstream forward failed");
-                    Ok::<_, std::convert::Infallible>(
-                        hyper::Response::builder()
-                            .status(502)
-                            .body(
-                                http_body_util::Full::new(bytes::Bytes::from_static(
-                                    b"upstream error\n",
-                                ))
-                                .map_err(|never| match never {})
-                                .boxed(),
-                            )
-                            .unwrap(),
-                    )
+                    let resp = hyper::Response::builder()
+                        .status(502)
+                        .body(
+                            http_body_util::Full::new(bytes::Bytes::from_static(
+                                b"upstream error\n",
+                            ))
+                            .map_err(|never| match never {})
+                            .boxed(),
+                        )
+                        .unwrap();
+                    events.send(ProxyEvent::RequestForwarded {
+                        host: host.clone(),
+                        status: 502,
+                        bytes_in: 0,
+                        bytes_out: 0,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    });
+                    Ok::<_, std::convert::Infallible>(resp)
                 }
             }
         }
     });
 
-    // Track bytes in/out + final status. We capture status by
-    // wrapping the body, but for §3.3 we approximate with
-    // duration only — a future §3.5 will use a tap body wrapper.
-    //
-    // HTTP/2 server: `Builder::new()` takes an executor
-    // (`TokioExecutor` is the standard choice for the tokio
-    // runtime). The same `service_fn` closure used by the
-    // http1 builder is accepted here because hyper's `Service`
-    // / `HttpService` traits are protocol-agnostic.
-    let status = match http2::Builder::new(TokioExecutor::new())
+    // Drive the h2 server. We don't capture `status` here anymore
+    // — the closure emits one `RequestForwarded` event per
+    // request, with the real upstream status, before the
+    // response body is fully streamed. The connection-level
+    // result (Ok vs Err) is just a health signal; if it errors,
+    // we log and return without emitting anything.
+    match http2::Builder::new(TokioExecutor::new())
         .serve_connection(io, svc)
         .await
     {
-        Ok(()) => 200, // connection completed; status was 200-ish from upstream
-        Err(e) => {
-            warn!(host = %host, error = %e, "hyper server connection errored");
-            return;
+        Ok(()) => {
+            debug!(host = %host_for_log, "connection closed cleanly");
         }
-    };
-    let duration_ms = started.elapsed().as_millis() as u64;
-
-    // Emit the event. Bytes-in/out are best-effort 0 for §3.3;
-    // §3.6 adds a body-tap wrapper that measures both.
-    proxy.events.send(ProxyEvent::RequestForwarded {
-        host: host_for_event,
-        status,
-        bytes_in: 0,
-        bytes_out: 0,
-        duration_ms,
-    });
-
-    debug!(host = %host, status, duration_ms, "request forwarded");
+        Err(e) => {
+            warn!(host = %host_for_log, error = %e, "hyper server connection errored");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -318,6 +365,56 @@ mod tests {
             !production_src.contains("http1::Builder::new()"),
             "listener.rs must NOT use http1::Builder::new() in production code — \
              that's the pre-Copilot-fix code that the ALPN h2 advertising broke."
+        );
+    }
+
+    /// Guard test: the service closure must reject non-GET
+    /// requests with a 501 instead of silently forwarding them
+    /// as GET. Regression for Copilot review thread 3593770829
+    /// (PR #17).
+    #[test]
+    fn handle_connection_rejects_non_get_with_501() {
+        let src = include_str!("listener.rs");
+        let production_src = src
+            .split_once("#[cfg(test)]")
+            .map(|(p, _)| p)
+            .unwrap_or(src);
+        assert!(
+            production_src.contains("req.method() != hyper::Method::GET"),
+            "listener.rs must check req.method() != GET and return 501 for \
+             non-GET requests. The pre-Copilot-fix code always called \
+             build_get_request, so a POST became a GET — silent corruption."
+        );
+    }
+
+    /// Guard test: the `RequestForwarded` event must capture the
+    /// real upstream status (not a hard-coded 200) and must be
+    /// emitted from inside the service closure (per request,
+    /// not per connection). Regression for Copilot review
+    /// thread 3593770866 (PR #17).
+    #[test]
+    fn handle_connection_emits_event_with_real_status_per_request() {
+        let src = include_str!("listener.rs");
+        let production_src = src
+            .split_once("#[cfg(test)]")
+            .map(|(p, _)| p)
+            .unwrap_or(src);
+        // The closure must call `events.send(...)` (emit
+        // per-request), not just at the connection level.
+        assert!(
+            production_src.contains("events.send(ProxyEvent::RequestForwarded"),
+            "listener.rs must emit RequestForwarded from inside the service \
+             closure, capturing the real upstream status. The pre-Copilot-fix \
+             code emitted once per connection with a hard-coded 200, so \
+             keep-alive connections batched N requests into one event and \
+             non-200 upstream responses were misreported."
+        );
+        // The status must come from the upstream response, not be
+        // hard-coded. Look for `resp.status().as_u16()` or similar.
+        assert!(
+            production_src.contains("resp.status().as_u16()"),
+            "listener.rs must capture the upstream response status \
+             (resp.status().as_u16()), not hard-code 200."
         );
     }
 }
