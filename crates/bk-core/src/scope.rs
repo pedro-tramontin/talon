@@ -6,8 +6,15 @@
 use serde::{Deserialize, Serialize};
 
 /// What to do with a request that matches a `ScopeRule`.
+///
+/// Marked `#[non_exhaustive]` per the Phase 10 plugin-system
+/// design contract (§5.1 item 1): v2 may add a `Log` action
+/// (capture but don't mark) or a `Throttle(duration)` action
+/// (delay the request to detect race conditions) without
+/// breaking v1's exhaustive matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum MatchAction {
     /// Allow the request; mark the resulting exchange as in-scope.
     InScope,
@@ -19,8 +26,14 @@ pub enum MatchAction {
     Block,
 }
 
+/// Marked `#[non_exhaustive]` per the Phase 10 plugin-system
+/// design contract (§5.1 item 1): v2 may add a `Method` kind
+/// (e.g. "match if request method is exactly POST") or a
+/// `Header { name, regex }` kind without breaking v1's
+/// exhaustive matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ScopeRuleKind {
     /// Matches if the URL's host is exactly this string (case-insensitive).
     /// `*.example.com` syntax is supported: prefix with `*.`.
@@ -101,8 +114,13 @@ pub struct MatchReplaceRule {
     pub priority: i32,
 }
 
+/// Marked `#[non_exhaustive]` per the Phase 10 plugin-system
+/// design contract (§5.1 item 1): v2 may add a `StatusCode`
+/// target (rewrite a specific status to a different one) or a
+/// `Cookie { name }` target without breaking v1 matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum MatchReplaceTarget {
     RequestUrl,
     RequestHeader,
