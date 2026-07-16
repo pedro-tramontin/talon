@@ -42,6 +42,9 @@ webpki-roots = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }
+http-body = { workspace = true }
+async-stream = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tower-service = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
