@@ -37,14 +37,28 @@ pub enum ProxyEvent {
         /// Why we're stopping.
         reason: StopReason,
     },
-    /// A browser-side request was successfully forwarded to the
-    /// upstream and the upstream's response was streamed back.
+    /// A browser-side request was handled by the proxy.
     ///
-    /// §3.3 emits this for HTTP/1.1 only; HTTP/2 lands in §3.5.
+    /// This event is emitted once per request from inside the
+    /// service closure (so keep-alive connections emit N events
+    /// for N requests, not one batched event per connection).
+    /// It fires for **every** terminal state of the request:
+    /// a successful upstream forward, a 501 rejection (the
+    /// method is non-GET and §3.3 only forwards GETs), or a
+    /// 502 (the upstream dial or the upstream HTTP forward
+    /// failed). The `status` field carries the response status
+    /// in all three cases — the success path returns the real
+    /// upstream status, while the 501/502 paths return the
+    /// proxy-generated status.
+    ///
     /// The host is the SNI from the CONNECT request — it is the
     /// single source of truth for the upstream hostname (NOT the
     /// `Host:` header, which a malicious client can spoof — design
     /// contract gotcha #1).
+    ///
+    /// The proxy's h2 server can serve both HTTP/1.1 and HTTP/2
+    /// requests on the browser side (whichever the client
+    /// selected via ALPN); this event covers both protocols.
     RequestForwarded {
         /// Lowercased SNI / CONNECT target host (no port).
         host: String,

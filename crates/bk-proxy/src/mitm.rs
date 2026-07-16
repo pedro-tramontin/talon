@@ -102,6 +102,11 @@ async fn read_connect_request(stream: &mut TcpStream) -> Result<String> {
 /// IPv6 brackets. The port is discarded (we always forward on
 /// 443). For IPv6, the input is `[2001:db8::1]:443` and the
 /// output is `2001:db8::1`.
+///
+/// Returns an empty string for malformed targets (e.g. `[foo`
+/// with no closing bracket). The caller (`read_connect_request`)
+/// runs an empty-host check that rejects these up front, so a
+/// malformed target never reaches cert-mint or upstream-dial.
 fn strip_connect_target_port(target: &str) -> &str {
     if let Some(rest) = target.strip_prefix('[') {
         // IPv6 literal form: `[<addr>]:<port>` (or just `[<addr>]`
@@ -109,9 +114,14 @@ fn strip_connect_target_port(target: &str) -> &str {
         if let Some(end) = rest.find(']') {
             return &rest[..end];
         }
-        // Malformed (`[foo` with no closing bracket) — fall through
-        // to the port-stripping logic below; the resulting "host"
-        // will be empty and the caller will reject it.
+        // Malformed (`[foo` with no closing bracket) — return
+        // empty so the caller's empty-host check rejects this
+        // fast. Previously this fell through to the
+        // port-stripping path, which produced a non-empty
+        // partial string (`[2001:db8:`) that passed the
+        // empty-host check and then produced a confusing
+        // downstream error.
+        return "";
     }
     // Plain hostname or hostname:port.
     target
@@ -215,22 +225,17 @@ mod tests {
         assert_eq!(strip_connect_target_port("example.com:443"), "example.com");
         // No port at all.
         assert_eq!(strip_connect_target_port("example.com"), "example.com");
-        // Malformed: missing closing bracket → falls through to
-        // the port-stripping path. The `rsplit_once(':')` treats
-        // the last `:` as the port separator, so the result is
-        // the substring before that colon. `read_connect_request`
-        // then runs the empty-host check, which rejects this
-        // (the malformed input produces a non-empty substring,
-        // so the empty check alone doesn't catch it — but the
-        // absence of a `]` means the input was clearly not a
-        // valid IPv6 literal, and the subsequent cert-mint /
-        // upstream-dial step will fail). The test only asserts
-        // the deterministic outcome of the helper.
-        assert_eq!(strip_connect_target_port("[2001:db8::1"), "[2001:db8:");
+        // Malformed: missing closing bracket → the helper
+        // returns an empty string so the caller's empty-host
+        // check rejects it. This is the new behavior (regression
+        // for Copilot review thread 3594225255 on PR #17); the
+        // previous fall-through produced a non-empty partial
+        // string (`"[2001:db8:"`) that passed the empty-host
+        // check and led to confusing downstream errors.
+        assert_eq!(strip_connect_target_port("[2001:db8::1"), "");
     }
 
     /// Guard test: the CONNECT reader must read one byte at a
-    /// time so it never over-reads past the end of the headers.
     /// Regression for Copilot review thread 3593770703 (PR #17).
     /// A 1024-byte chunked read can over-read past the `\r\n\r\n`
     /// marker; the leftover bytes (which belong to the next TLS

@@ -148,11 +148,54 @@ pub fn build_upstream_tls_config_with_extra_root(extra_root_der: &[u8]) -> Resul
 /// the proxy needs to forward. The path and method are taken from
 /// the browser's request; the `Host:` header is **set by us** to the
 /// SNI host (not the browser's Host header).
+///
+/// ## Request-target: origin-form, not absolute-form
+///
+/// The `request-target` is the origin-form `/path?query` (just the
+/// path + optional query), NOT the absolute-form
+/// `https://host/path`. RFC 7230 §5.3.2 says origin-form is the
+/// standard for "requests made directly to an origin server" —
+/// which is what we're doing, because we open a fresh direct
+/// TCP+TLS connection to the upstream and the upstream is the
+/// origin. Absolute-form is only for requests sent to a proxy.
+///
+/// Absolute-form would also be ambiguous for IPv6 literals: the
+/// authority component for IPv6 requires brackets
+/// (`https://[2001:db8::1]/path`), and the absolute-form URI is
+/// only legal for HTTP/1.1 (h2 requires origin-form per RFC 7540
+/// §8.1.2.3). Sticking with origin-form avoids both issues.
+///
+/// ## `Host:` header for IPv6 literals
+///
+/// The HTTP/1.1 `Host:` header for an IPv6 literal also requires
+/// brackets — `Host: [2001:db8::1]` (the port, if non-default,
+/// goes in `[host]:port` form). We always forward on port 443
+/// (the §3.3 "always 443" rule), so we can omit the port and
+/// just send `Host: [2001:db8::1]` (or `Host: example.com` for
+/// normal hostnames).
 pub fn build_get_request(host: &str, path_and_query: &str) -> Result<Request<UpstreamBody>> {
+    let host_header = if host.contains(':') {
+        // IPv6 literal — needs brackets in the Host header.
+        // (The CONNECT-target parser already stripped the
+        // brackets; we re-add them here because the HTTP wire
+        // format requires them.)
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    // Origin-form request-target: just the path + optional query.
+    // The hyper Request builder accepts an origin-form URI for
+    // HTTP/1.1 and h2 (both protocols use it; h2 doesn't allow
+    // absolute-form at all per RFC 7540 §8.1.2.3).
+    let path = if path_and_query.is_empty() {
+        "/"
+    } else {
+        path_and_query
+    };
     let req = Request::builder()
         .method("GET")
-        .uri(format!("https://{host}{path_and_query}"))
-        .header("Host", host)
+        .uri(path)
+        .header("Host", host_header)
         .header("User-Agent", "talon/0.1")
         .body(UpstreamBody::new())
         .map_err(|e| anyhow!("failed to build upstream request: {e}"))?;
@@ -170,3 +213,56 @@ pub type SharedHttpConnector = HttpConnector;
 // is left in scope for the future POST/PUT branch.
 #[allow(dead_code)]
 type _UpstreamBodyFuture = http_body_util::Empty<bytes::Bytes>;
+
+#[cfg(test)]
+mod tests {
+    //! Regression tests for `build_get_request` (the upstream
+    //! request builder). The pre-Copilot-fix code used
+    //! absolute-form URIs (`https://{host}{path}`) and an
+    //! unmodified `Host` header, which broke for IPv6 literals
+    //! (they need brackets in both the URI authority and the
+    //! `Host:` header). It also didn't work for h2 upstream
+    //! connections because h2 requires origin-form per RFC 7540
+    //! §8.1.2.3. Regression for Copilot review thread
+    //! 3594225116 (PR #17).
+
+    use super::build_get_request;
+
+    #[test]
+    fn build_get_request_uses_origin_form_path() {
+        let req = build_get_request("example.com", "/foo?bar=1").unwrap();
+        // Origin-form: just the path, NOT `https://example.com/foo?bar=1`.
+        assert_eq!(req.uri().path_and_query().unwrap().as_str(), "/foo?bar=1");
+        assert_eq!(req.uri().scheme_str(), None, "origin-form has no scheme");
+        assert_eq!(req.uri().authority(), None, "origin-form has no authority");
+    }
+
+    #[test]
+    fn build_get_request_defaults_missing_path_to_slash() {
+        let req = build_get_request("example.com", "").unwrap();
+        assert_eq!(req.uri().path(), "/");
+    }
+
+    #[test]
+    fn build_get_request_host_header_for_ipv6_uses_brackets() {
+        // `build_get_request` expects `host` to be the bare
+        // IPv6 literal (no brackets) — the helper that strips
+        // them is the `strip_connect_target_port` upstream in
+        // `mitm.rs`. The `Host:` header needs brackets because
+        // the HTTP wire format requires them.
+        let req = build_get_request("2001:db8::1", "/").unwrap();
+        assert_eq!(
+            req.headers().get("Host").unwrap().to_str().unwrap(),
+            "[2001:db8::1]"
+        );
+    }
+
+    #[test]
+    fn build_get_request_host_header_for_hostname_unchanged() {
+        let req = build_get_request("example.com", "/").unwrap();
+        assert_eq!(
+            req.headers().get("Host").unwrap().to_str().unwrap(),
+            "example.com"
+        );
+    }
+}

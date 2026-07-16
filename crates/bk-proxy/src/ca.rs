@@ -337,9 +337,12 @@ impl RootCa {
     /// the freshly-signed leaf (a one-element chain — we don't send
     /// the root, browsers don't need it and it bloats the handshake).
     /// ALPN advertises `[h2, http/1.1]` so a browser that wants h2
-    /// will see the offer; we only speak http/1.1 in §3.3, so an h2
-    /// client gets a 505 from the inner handler (out of scope for
-    /// §3.3, fixed in §3.5).
+    /// will see the offer; the actual server side is
+    /// `hyper::server::conn::http2::Builder` (see
+    /// `listener::handle_connection`), which negotiates whichever
+    /// protocol the client selected. The `service_fn` closure is
+    /// the same for both h2 and http/1.1 because hyper's
+    /// `Service` / `HttpService` traits are protocol-agnostic.
     ///
     /// # Why the chain does NOT include the root cert
     ///

@@ -142,13 +142,18 @@ pub async fn accept_loop(
 /// 1. Try to read a `CONNECT host:port` request from the browser.
 /// 2. Reply `200 Connection Established` and perform the TLS handshake
 ///    using a per-host cert minted from the proxy's `RootCa`.
-/// 3. Read the HTTP/1.1 request from the decrypted TLS stream.
+/// 3. Read the HTTP/1.1 **or HTTP/2** request from the decrypted
+///    TLS stream. The protocol is negotiated via ALPN; the same
+///    `service_fn` closure works for both because hyper's
+///    `Service` / `HttpService` traits are protocol-agnostic.
 /// 4. Forward the request to the real upstream over a fresh TLS
 ///    connection (the host comes from the SNI, NOT the Host header —
 ///    design contract gotcha #1).
 /// 5. Stream the response back to the browser over the same TLS
 ///    stream.
-/// 6. Emit `ProxyEvent::RequestForwarded` on success.
+/// 6. Emit `ProxyEvent::RequestForwarded` for the request
+///    (success path returns the real upstream status; 501/502
+///    rejections return the proxy-generated status).
 ///
 /// Non-CONNECT requests (plain HTTP proxy use) are not handled in
 /// §3.3 — Phase 4 adds that. The connection is closed with an
@@ -415,6 +420,33 @@ mod tests {
             production_src.contains("resp.status().as_u16()"),
             "listener.rs must capture the upstream response status \
              (resp.status().as_u16()), not hard-code 200."
+        );
+    }
+
+    /// Guard test: the upstream request builder
+    /// (`build_get_request` in `upstream.rs`) must produce
+    /// origin-form URIs (just the path, not `https://host/path`)
+    /// so the request is valid for both HTTP/1.1 and HTTP/2
+    /// upstreams and so IPv6 literals in the host can be sent
+    /// without ambiguity. Regression for Copilot review thread
+    /// 3594225116 (PR #17).
+    #[test]
+    fn build_get_request_uses_origin_form_uri() {
+        let src = include_str!("upstream.rs");
+        let production_src = src
+            .split_once("#[cfg(test)]")
+            .map(|(p, _)| p)
+            .unwrap_or(src);
+        // The fix site: must be present (build_get_request must
+        // NOT construct `https://{host}{path}`).
+        assert!(
+            !production_src.contains("format!(\"https://{host}{path_and_query}\")"),
+            "build_get_request must NOT use absolute-form URIs \
+             (`https://{{host}}{{path}}`). Origin-form (`/path`) is \
+             the standard request-target for direct-connection \
+             requests, the only legal form for h2 per RFC 7540 \
+             §8.1.2.3, and the only way to keep IPv6 literals \
+             unambiguous in the URI authority."
         );
     }
 }
