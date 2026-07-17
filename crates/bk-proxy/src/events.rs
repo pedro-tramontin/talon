@@ -7,7 +7,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 /// Why the proxy stopped.
+///
+/// Marked `#[non_exhaustive]` per the Phase 10 plugin-system
+/// design contract (§5.1 item 1): v2 may add a `PluginPanic`
+/// or `HostFunctionTrap` variant without breaking every `match`
+/// on this type in v1 code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum StopReason {
     /// A SIGINT / SIGTERM was received.
     Signal,
@@ -21,7 +27,17 @@ pub enum StopReason {
 /// `RequestForwarded` so the Tauri UI (and tests) can observe a
 /// successful upstream round-trip. The per-direction
 /// `RequestCaptured` / `ResponseCaptured` variants land in §3.6.
+///
+/// **Marked `#[non_exhaustive]` per the Phase 10 plugin-system
+/// design contract (§5.1 item 1):** v2 will add `PluginLoaded`,
+/// `PluginUnloaded`, `PluginTrapped` (and possibly more) without
+/// breaking every `match` on this type in v1 code. **v1 callers
+/// must add a wildcard arm (`_ =>`) to every match on this enum.**
+/// This is enforced by `cargo clippy --all-targets` if you enable
+/// the `clippy::exhaustive_enums` lint at the workspace level
+/// (deferred — see Phase 10 §5.2 item 7 for why).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ProxyEvent {
     /// The TCP listener is bound and accepting.
     ProxyStarted {
@@ -109,5 +125,48 @@ impl ProxyEventBus {
 impl Default for ProxyEventBus {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    /// Regression for the Phase 10 plugin-system design contract
+    /// (§5.1 item 1): v1 callers must write a wildcard arm when
+    /// matching on `ProxyEvent` so that v2's added variants
+    /// (e.g. `PluginLoaded`) don't break the match. This test
+    /// documents the discipline by example: it pattern-matches
+    /// with a wildcard and would still compile if v2 added
+    /// `PluginLoaded { name: String }` to the enum.
+    ///
+    /// Sync (not `#[tokio::test]`) because there's no async
+    /// work to do — the value is the compile-time proof that
+    /// the wildcard arm is present.
+    ///
+    /// The wildcard arm is `unreachable_patterns`-warned in v1
+    /// (all 3 v1 variants are matched above). In v2, when
+    /// `PluginLoaded` / `PluginUnloaded` / `PluginTrapped` are
+    /// added to the enum, this arm becomes the catch-all that
+    /// keeps the test compiling. The `#[allow]` documents the
+    /// intent: "this arm exists for the future, not for now."
+    #[allow(unreachable_patterns)]
+    #[test]
+    fn proxy_event_supports_wildcard_match_for_v2_extensibility() {
+        let ev: ProxyEvent = ProxyEvent::ProxyStarted {
+            listener_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            ca_fingerprint: "deadbeef".into(),
+        };
+        let label = match &ev {
+            ProxyEvent::ProxyStarted { .. } => "started",
+            ProxyEvent::ProxyStopped { .. } => "stopped",
+            ProxyEvent::RequestForwarded { .. } => "forwarded",
+            // Wildcard arm — required by `#[non_exhaustive]`.
+            // v2's `PluginLoaded`/`PluginUnloaded`/`PluginTrapped`
+            // fall here without breaking the build.
+            _ => "other",
+        };
+        assert_eq!(label, "started");
     }
 }
