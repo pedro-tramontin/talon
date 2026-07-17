@@ -167,9 +167,19 @@ impl TestOrigin {
         let cert = Arc::new(TestOriginCert::new());
         // The H1 origin advertises no ALPN — falls back to
         // H1 in the pool's ALPN branch. The H2 origin
-        // advertises `[h2, http/1.1]` so the client picks
-        // h2 (the proxy advertises the same list, in the
-        // same order, so the negotiation is symmetric).
+        // advertises `[h2, http/1.1]` so a client that supports
+        // both picks h2 (the proxy advertises the same list, in
+        // the same order, so the negotiation is symmetric).
+        //
+        // **Copilot review (PR #22 #3):** the previous version
+        // advertised `[h2, http/1.1]` for `Protocol::H2` but
+        // `serve_one` always ran the H2 server builder. If a
+        // client offered only `http/1.1`, ALPN would pick it and
+        // the H2-only server would fail. Fix: branch the
+        // `serve_one` builder on the *negotiated* ALPN value,
+        // not on the configured `Protocol`. This matches real
+        // production origins (Cloudflare, AWS ALB) that serve
+        // both h1 + h2 on the same listener.
         let alpn: Vec<Vec<u8>> = match protocol {
             Protocol::H1 => Vec::new(),
             Protocol::H2 => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
@@ -187,7 +197,7 @@ impl TestOrigin {
         let acceptor = TlsAcceptor::from(server_config);
 
         let join = tokio::spawn(async move {
-            serve_loop(tcp, acceptor, shutdown_rx, session_count_clone, protocol).await
+            serve_loop(tcp, acceptor, shutdown_rx, session_count_clone).await
         });
 
         Ok(Self {
@@ -219,7 +229,6 @@ async fn serve_loop(
     acceptor: TlsAcceptor,
     mut shutdown_rx: oneshot::Receiver<()>,
     session_count: Arc<AtomicUsize>,
-    protocol: Protocol,
 ) {
     loop {
         tokio::select! {
@@ -239,7 +248,7 @@ async fn serve_loop(
                 let acceptor = acceptor.clone();
                 let count = session_count.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = serve_one(acceptor, stream, protocol).await {
+                    if let Err(e) = serve_one(acceptor, stream).await {
                         debug!(error = %e, "test origin serve_one error");
                     } else {
                         count.fetch_add(1, Ordering::SeqCst);
@@ -255,12 +264,32 @@ async fn serve_loop(
 /// The response body is the same as the request body (echo),
 /// so a test can set a unique token in the request and assert
 /// the same token comes back.
-async fn serve_one(
-    acceptor: TlsAcceptor,
-    tcp: tokio::net::TcpStream,
-    protocol: Protocol,
-) -> Result<()> {
+///
+/// The protocol on the wire is whatever ALPN negotiated —
+/// this function does **not** take a `Protocol` argument.
+/// The `Protocol` is set at `start_with_protocol` time
+/// (it controls the advertised ALPN list) but the *negotiated*
+/// value is what we dispatch on here. The configured
+/// `Protocol::H2` advertises `[h2, http/1.1]`, so a client
+/// that supports both picks h2; a client that only offers
+/// h1 falls through to the h1 branch.
+async fn serve_one(acceptor: TlsAcceptor, tcp: tokio::net::TcpStream) -> Result<()> {
     let tls = acceptor.accept(tcp).await.context("TLS accept")?;
+    // Read the negotiated ALPN. Per RFC 7301 §3.2 the server's
+    // preference wins — the value here is what the client
+    // picked from our advertised list, not what we wanted.
+    //
+    // **Copilot review (PR #22 #3):** the previous version
+    // ignored the negotiated value and unconditionally ran
+    // either the h1 or h2 builder based on the configured
+    // `Protocol`. If the client offered only `http/1.1` and
+    // the configured `Protocol` was `H2`, ALPN would pick
+    // `http/1.1` and the H2 builder would fail. Fix: dispatch
+    // on the *negotiated* ALPN, not the configured protocol.
+    // An unconfigured origin (`Protocol::H1` with no ALPN)
+    // negotiates to `None` and falls back to H1 — same as
+    // pre-§3.5 behavior.
+    let negotiated: Option<Vec<u8>> = tls.get_ref().1.alpn_protocol().map(|s| s.to_vec());
     let io = TokioIo::new(tls);
 
     let svc = service_fn(|req: hyper::Request<hyper::body::Incoming>| async move {
@@ -278,18 +307,28 @@ async fn serve_one(
         )
     });
 
-    match protocol {
-        Protocol::H1 => {
-            http1::Builder::new()
-                .serve_connection(io, svc)
-                .await
-                .context("hyper h1 serve_connection")?;
-        }
-        Protocol::H2 => {
+    // Dispatch by the *negotiated* ALPN, not the configured
+    // protocol. The `protocol` parameter is still in the
+    // signature so callers can opt into ALPN via
+    // `start_with_protocol(Protocol::H2)`; the actual
+    // protocol on the wire is whatever the client picked.
+    match negotiated.as_deref() {
+        Some(b"h2") => {
             hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
                 .serve_connection(io, svc)
                 .await
                 .context("hyper h2 serve_connection")?;
+        }
+        // `None` (no ALPN configured) or `Some(b"http/1.1")`
+        // (ALPN negotiated h1) both fall through to h1.
+        // `Some(other)` is unreachable in our config (we
+        // only advertise h2 + http/1.1) but the match is
+        // exhaustive to keep clippy happy.
+        _ => {
+            http1::Builder::new()
+                .serve_connection(io, svc)
+                .await
+                .context("hyper h1 serve_connection")?;
         }
     }
     Ok(())
