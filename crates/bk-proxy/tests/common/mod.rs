@@ -37,6 +37,24 @@ use tokio::sync::oneshot;
 use tokio_rustls::TlsAcceptor;
 use tracing::debug;
 
+/// Which HTTP protocol the in-process test origin speaks on
+/// accepted connections. §3.5 adds [`Protocol::H2`] so the
+/// same `TestOrigin` helper can serve both H1 (default —
+/// matches §3.5-prep behavior, no test churn) and H2 (the
+/// §3.5 roundtrip + multiplexing tests).
+///
+/// `#[allow(dead_code)]` because [`Protocol::H2`] is not yet
+/// referenced by any committed test — it's the opt-in for the
+/// next PR (§3.5 production work). The H1 variant is the
+/// default and is used by `mitm_roundtrip_through_in_process_tls_origin`.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Protocol {
+    /// HTTP/1.1 (`hyper::server::conn::http1::Builder`).
+    H1,
+    /// HTTP/2 (`hyper::server::conn::http2::Builder`).
+    H2,
+}
 /// A self-signed cert + key for the in-process TLS test origin.
 ///
 /// The cert is `CN=localhost`, valid for 1 year, with no
@@ -75,10 +93,15 @@ impl TestOriginCert {
         }
     }
 
-    /// Build a `rustls::ServerConfig` from this cert + key. The
-    /// `ServerConfig` has no client auth (the test origin
-    /// doesn't need to authenticate the proxy).
-    pub fn server_config(&self) -> Arc<rustls::ServerConfig> {
+    /// Build a `rustls::ServerConfig` with the given ALPN
+    /// protocols (or no ALPN when the slice is empty — the
+    /// pre-§3.5 default, where the H1 origin didn't advertise
+    /// any protocol negotiation). The list is the order the
+    /// server will advertise; the client picks the first one
+    /// it supports. §3.5 tests pass `vec![b"h2", b"http/1.1"]`
+    /// so the server can negotiate either protocol on the
+    /// same listener.
+    pub fn server_config_with_alpn(&self, alpn_protocols: &[Vec<u8>]) -> Arc<rustls::ServerConfig> {
         // Use the simple `ServerConfig::builder()` form (not
         // `builder_with_provider`) so the config picks up the
         // process-default crypto provider, the same way the
@@ -86,12 +109,14 @@ impl TestOriginCert {
         // process-default provider is whichever feature is
         // enabled in the workspace (`aws_lc_rs` by default in
         // `rustls 0.23`).
-        Arc::new(
-            rustls::ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(self.cert_chain.clone(), self.key.clone_key())
-                .expect("with_single_cert"),
-        )
+        let mut cfg = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(self.cert_chain.clone(), self.key.clone_key())
+            .expect("with_single_cert");
+        if !alpn_protocols.is_empty() {
+            cfg.alpn_protocols = alpn_protocols.to_vec();
+        }
+        Arc::new(cfg)
     }
 }
 
@@ -125,10 +150,31 @@ impl TestOrigin {
     /// Start a new TLS test origin on a free port. Returns
     /// the bound address (which the test client dials) and a
     /// `TestOrigin` handle whose `Drop` impl shuts the server
-    /// down.
+    /// down. Defaults to HTTP/1.1; use
+    /// [`TestOrigin::start_with_protocol`] to opt into H2.
     pub async fn start() -> Result<Self> {
+        Self::start_with_protocol(Protocol::H1).await
+    }
+
+    /// Start a new TLS test origin speaking the given
+    /// protocol. When `protocol == Protocol::H1` the
+    /// `ServerConfig` advertises no ALPN (the default
+    /// pre-§3.5 behavior — H1 keep-alive still works). When
+    /// `protocol == Protocol::H2` the `ServerConfig` advertises
+    /// `[h2, http/1.1]` so the proxy's `rustls::ClientConfig`
+    /// picks `h2` via ALPN.
+    pub async fn start_with_protocol(protocol: Protocol) -> Result<Self> {
         let cert = Arc::new(TestOriginCert::new());
-        let server_config = cert.server_config();
+        // The H1 origin advertises no ALPN — falls back to
+        // H1 in the pool's ALPN branch. The H2 origin
+        // advertises `[h2, http/1.1]` so the client picks
+        // h2 (the proxy advertises the same list, in the
+        // same order, so the negotiation is symmetric).
+        let alpn: Vec<Vec<u8>> = match protocol {
+            Protocol::H1 => Vec::new(),
+            Protocol::H2 => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        };
+        let server_config = cert.server_config_with_alpn(&alpn);
         let session_count = Arc::new(AtomicUsize::new(0));
         let session_count_clone = session_count.clone();
 
@@ -141,7 +187,7 @@ impl TestOrigin {
         let acceptor = TlsAcceptor::from(server_config);
 
         let join = tokio::spawn(async move {
-            serve_loop(tcp, acceptor, shutdown_rx, session_count_clone).await
+            serve_loop(tcp, acceptor, shutdown_rx, session_count_clone, protocol).await
         });
 
         Ok(Self {
@@ -173,6 +219,7 @@ async fn serve_loop(
     acceptor: TlsAcceptor,
     mut shutdown_rx: oneshot::Receiver<()>,
     session_count: Arc<AtomicUsize>,
+    protocol: Protocol,
 ) {
     loop {
         tokio::select! {
@@ -192,7 +239,7 @@ async fn serve_loop(
                 let acceptor = acceptor.clone();
                 let count = session_count.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = serve_one(acceptor, stream).await {
+                    if let Err(e) = serve_one(acceptor, stream, protocol).await {
                         debug!(error = %e, "test origin serve_one error");
                     } else {
                         count.fetch_add(1, Ordering::SeqCst);
@@ -204,11 +251,15 @@ async fn serve_loop(
 }
 
 /// Drive a single TLS session: accept the TLS handshake, then
-/// drive one hyper HTTP/1.1 request through it. The response
-/// body is the same as the request body (echo), so a test can
-/// set a unique token in the request and assert the same
-/// token comes back.
-async fn serve_one(acceptor: TlsAcceptor, tcp: tokio::net::TcpStream) -> Result<()> {
+/// drive one hyper HTTP/1.1 (or HTTP/2) request through it.
+/// The response body is the same as the request body (echo),
+/// so a test can set a unique token in the request and assert
+/// the same token comes back.
+async fn serve_one(
+    acceptor: TlsAcceptor,
+    tcp: tokio::net::TcpStream,
+    protocol: Protocol,
+) -> Result<()> {
     let tls = acceptor.accept(tcp).await.context("TLS accept")?;
     let io = TokioIo::new(tls);
 
@@ -227,10 +278,20 @@ async fn serve_one(acceptor: TlsAcceptor, tcp: tokio::net::TcpStream) -> Result<
         )
     });
 
-    http1::Builder::new()
-        .serve_connection(io, svc)
-        .await
-        .context("hyper serve_connection")?;
+    match protocol {
+        Protocol::H1 => {
+            http1::Builder::new()
+                .serve_connection(io, svc)
+                .await
+                .context("hyper h1 serve_connection")?;
+        }
+        Protocol::H2 => {
+            hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                .serve_connection(io, svc)
+                .await
+                .context("hyper h2 serve_connection")?;
+        }
+    }
     Ok(())
 }
 
