@@ -78,15 +78,19 @@ pub async fn forward_request(
     request: Request<UpstreamBody>,
     pool: &Pool,
 ) -> Result<(PooledConn, Response<UpstreamResponseBody>)> {
-    forward_request_with_tls_config(host, request, pool).await
+    forward_request_via_pool(host, request, pool).await
 }
 
-/// Test-only variant of `forward_request`. The test should
-/// build a [`Pool`] with a custom `ClientConfig` (e.g. one that
-/// trusts a test `RootCa`) and pass it here. **Not part of
-/// the public surface; do not call from non-test code.**
+/// Internal entry point for `forward_request` (and the only
+/// function that needs the `[doc(hidden)]` test-only variant).
+/// Renamed from `forward_request_with_tls_config` in PR #20 /
+/// Copilot #2: the function no longer takes a TLS config
+/// (that lives on the [`Pool`]); it takes a `&Pool`. The old
+/// name was misleading because there was no longer a "with
+/// TLS config" variant to contrast against — the only TLS
+/// configuration in the system is the one stored on the pool.
 #[doc(hidden)]
-pub async fn forward_request_with_tls_config(
+pub async fn forward_request_via_pool(
     host: &str,
     request: Request<UpstreamBody>,
     pool: &Pool,
@@ -142,9 +146,14 @@ pub async fn forward_request_with_tls_config(
 /// browser-side method (GET, POST, PUT, etc.); the `path_and_query`
 /// is the origin-form request-target; the `body` is a streaming
 /// `UpstreamBody` (use `empty_upstream_body()` for the GET case,
-/// or `forward_incoming_body(...)` to forward an `Incoming` body
-/// from the browser side). The `Host:` header is **set by us** to
-/// the SNI host (not the browser's Host header).
+/// or `build_body_from_incoming(...)` to forward an `Incoming`
+/// body from the browser side). The `Host:` header is **set by
+/// us** to the SNI host (not the browser's Host header).
+///
+/// PR #20 / Copilot #3: the previous version of this doc
+/// referenced `forward_incoming_body(...)`, which is a
+/// non-existent function in this module. The actual exported
+/// helper is `build_body_from_incoming`.
 ///
 /// ## Request-target: origin-form, not absolute-form
 ///

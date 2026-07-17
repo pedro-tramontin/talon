@@ -242,16 +242,16 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
             };
 
             match crate::upstream::forward_request(&host, upstream_req, &upstream_pool).await {
-                Ok((_pooled, resp)) => {
+                Ok((mut pooled, resp)) => {
                     // CRITICAL (PR #19 / §3.3.6 follow-up #1):
-                    // `_pooled` MUST stay in scope until the
+                    // `pooled` MUST stay in scope until the
                     // response body is fully drained. We
                     // collect the body into `Bytes` here
                     // (the upstream → proxy hop) and return
                     // a `Full<Bytes>` body to the browser
                     // (the proxy → browser hop). The
                     // collection forces the upstream body
-                    // to be fully drained before `_pooled`
+                    // to be fully drained before `pooled`
                     // drops at the end of this match arm,
                     // so the conn returns to the pool only
                     // when the upstream → proxy side is
@@ -283,10 +283,19 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
                     // the closure scope (after the 502 is sent).
                     let body_bytes: bytes::Bytes = match body.collect().await {
                         Ok(c) => c.to_bytes(),
-                        Err(_e) => {
-                            tracing::error!("upstream body collect failed");
-                            // Build a 502 and let the
-                            // conn drop normally.
+                        Err(e) => {
+                            // PR #20 / Copilot review #1: a body
+                            // read error means the conn is
+                            // unusable (the driver has exited or
+                            // the upstream sent garbage). Mark
+                            // the conn errored so `Drop`
+                            // discards it instead of returning
+                            // a poisoned conn to the pool.
+                            // Also log the underlying error
+                            // (the previous version dropped it
+                            // with `_e`).
+                            tracing::error!(error = %e, "upstream body collect failed");
+                            pooled.mark_errored();
                             let body: http_body_util::combinators::BoxBody<
                                 bytes::Bytes,
                                 std::convert::Infallible,
@@ -326,7 +335,7 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
                         bytes_out,
                         duration_ms: started.elapsed().as_millis() as u64,
                     });
-                    // `_pooled` drops at the end of this
+                    // `pooled` drops at the end of this
                     // match arm. With the upstream body
                     // now fully drained, dropping the
                     // conn is safe — the conn's driver
