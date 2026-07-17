@@ -31,12 +31,21 @@ use tokio_rustls::TlsConnector;
 use tracing::debug;
 
 /// Real MITM roundtrip: a hyper client connects to the proxy
-/// via TCP → CONNECT → TLS, then speaks HTTP/1.1 over the TLS
+/// via TCP → CONNECT → TLS, then speaks HTTP/2 over the TLS
 /// stream. The proxy MITMs the request, dials the in-process
 /// TLS test origin (which echoes the request body), and returns
 /// the origin's response. The test asserts the body came back
 /// intact + the proxy's `RequestForwarded` event fires with
 /// the expected host.
+///
+/// **Why HTTP/2, not HTTP/1.1:** the proxy's listener serves h2
+/// to the client side (per the §3.3.5 `http2::Builder` shipping
+/// — the ALPN list advertises `h2, http/1.1` and modern browsers
+/// prefer h2). The test client uses
+/// `hyper::client::conn::http2::handshake` to match. An h1
+/// test client hits a `hyper::Error(Parse(Version))` because
+/// the proxy's first response frame is the h2 connection
+/// preface (`PRI * HTTP/2.0...`), not `HTTP/1.1 200`.
 ///
 /// **Why this is the load-bearing test:** every other unit test
 /// in the proxy is a fragment (CA leaf signing, CONNECT parsing,
@@ -87,11 +96,13 @@ async fn mitm_roundtrip_through_in_process_tls_origin() {
             .with_no_client_auth(),
     );
 
-    // Bind a free port for the proxy.
-    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let proxy_addr = tcp.local_addr().unwrap();
-    drop(tcp);
-    let listener = tokio::net::TcpListener::bind(proxy_addr).await.unwrap();
+    // Bind a free port for the proxy. Bind ONCE with Tokio and
+    // read `local_addr()` off the same listener — avoids the
+    // std→tokio re-bind race another process could win.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy listener");
+    let proxy_addr = listener.local_addr().expect("proxy local_addr");
 
     // Use `new_with_upstream_tls_config` so the proxy's
     // upstream side trusts the in-process origin. The default
@@ -173,17 +184,40 @@ async fn mitm_roundtrip_through_in_process_tls_origin() {
         .expect("write CONNECT");
 
     // Read the CONNECT response (read until end of headers, then stop).
+    //
+    // `read()` returns `Ok(0)` when the peer closes the
+    // connection cleanly (EOF). Without an EOF check, a
+    // proxy-side early close would spin this loop forever
+    // and hang the test. The 5 KiB cap is a belt-and-braces
+    // upper bound — the real CONNECT response is well under
+    // 200 bytes; a runaway read past 5 KiB is a misbehaving
+    // proxy and should fail the test loudly.
     let mut buf = Vec::new();
     let mut tmp = [0u8; 1024];
+    let mut got_eof = false;
     loop {
         let n = tcp_to_proxy
             .read(&mut tmp)
             .await
             .expect("read CONNECT resp");
+        if n == 0 {
+            got_eof = true;
+            break;
+        }
         buf.extend_from_slice(&tmp[..n]);
         if buf.windows(4).any(|w| w == b"\r\n\r\n") {
             break;
         }
+        if buf.len() > 5 * 1024 {
+            panic!(
+                "CONNECT response exceeded 5 KiB without \r\n\r\n; \
+                 first 256 bytes: {:?}",
+                String::from_utf8_lossy(&buf[..buf.len().min(256)])
+            );
+        }
+    }
+    if got_eof && !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+        panic!("proxy closed CONNECT response before sending headers; got: {buf:?}");
     }
     let connect_resp = std::str::from_utf8(&buf).expect("utf8 CONNECT resp");
     debug!("CONNECT response: {connect_resp}");

@@ -108,11 +108,15 @@ pub struct TestOrigin {
     /// upstream conn.
     #[allow(dead_code)]
     pub session_count: Arc<AtomicUsize>,
-    // The shutdown sender + server task JoinHandle. Held so
-    // `Drop` can signal the server task to exit cleanly. Both
-    // are read in the `Drop` impl below, so neither generates
-    // a dead-code warning.
+    // Shutdown sender. Drop reads it to break the server task
+    // out of its accept loop. Marked `Option<...>` so the
+    // `take()` in `Drop` doesn't need a default.
     shutdown_tx: Option<oneshot::Sender<()>>,
+    // Server task `JoinHandle`. Held to keep the task alive
+    // for the lifetime of the `TestOrigin` (dropping the
+    // handle would still let the task run to completion, but
+    // holding it makes the lifetime explicit and silences the
+    // unused-field lint).
     #[allow(dead_code)]
     join: Option<tokio::task::JoinHandle<()>>,
 }

@@ -102,16 +102,18 @@ impl Proxy {
     /// need to plug in a one-off trust anchor (e.g. the in-process
     /// TLS test origin from `tests/common/mod.rs`).
     ///
-    /// The provided [`ClientConfig`] is wrapped in an `Arc` and
+    /// The provided [`rustls::ClientConfig`] is wrapped in an `Arc` and
     /// shared across every connection handler via the pool. The
     /// caller is responsible for keeping the config valid for the
     /// lifetime of the proxy.
     ///
-    /// `Proxy::new_with_upstream_tls_config` (no `Arc<ClientConfig>`
-    /// arg) is intentionally not provided — the simple constructors
-    /// always use the Mozilla bundle, which is the right default.
-    /// Test-only trust anchors (e.g. an in-process test origin) are
-    /// the load-bearing use case for this entry point.
+    /// **No `&rustls::ClientConfig` overload is provided** — the
+    /// pool needs an `Arc` because the conn-driver task spawned
+    /// by `connect()` outlives the `Proxy::new_with_upstream_tls_config`
+    /// call. Callers without an `Arc` can wrap with `Arc::new`
+    /// at the call site. The simple constructors (`Proxy::new`,
+    /// `Proxy::new_with_pool`) always use the Mozilla bundle,
+    /// which is the right default for production.
     pub fn new_with_upstream_tls_config(
         config: ProxyConfig,
         root_ca: Arc<RootCa>,
