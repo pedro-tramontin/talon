@@ -388,12 +388,24 @@ impl PooledConnH2 {
     /// Send a request over the pooled H2 conn and await the
     /// response head. Same caller contract as H1: keep the
     /// `PooledConnH2` alive until the response body is fully
-    /// drained. The H2 protocol supports many concurrent
-    /// in-flight requests on one conn (multiplexing), so the
-    /// pool doesn't enforce a 1-request-per-conn limit; the
-    /// only limit is the H2 `max_concurrent_reset_streams`
-    /// setting (a hyper default). The RAII contract is
-    /// per-`PooledConnH2`, not per-stream.
+    /// drained.
+    ///
+    /// **§3.5.4 follow-up (NOT YET IMPLEMENTED):** the
+    /// underlying h2 protocol IS multiplexed — many concurrent
+    /// in-flight requests share one TCP+TLS conn. But the
+    /// current `PooledConnH2` API takes `&mut self`, which
+    /// limits one `PooledConnH2` handle to one in-flight
+    /// request at a time (no concurrent `send_request` calls
+    /// on the same `PooledConnH2`). True multiplexing
+    /// requires redesigning `PooledConnH2` to share the
+    /// inner sender via `Arc<...>` so multiple handles can
+    /// issue concurrent requests on one conn. The
+    /// §3.5.4 follow-up PR adds this. Until then, the
+    /// `reused_h2_conns` counter reflects "many sequential
+    /// H2 requests on the same conn" (which still avoids the
+    /// TCP+TLS handshake cost), NOT "many concurrent
+    /// requests on the same conn" (which would be the
+    /// multiplexing win).
     pub async fn send_request(
         &mut self,
         request: http::Request<UpstreamBody>,
@@ -497,9 +509,16 @@ impl PooledConn {
     /// response head. Dispatches to the right inner sender.
     /// The caller MUST keep this `PooledConn` alive until the
     /// response body is fully drained — same caller contract
-    /// as the §3.3.5 H1 path. The H2 path is multiplexed
-    /// (many concurrent in-flight requests on one conn) but
-    /// the per-`PooledConn` RAII contract still holds.
+    /// as the §3.3.5 H1 path.
+    ///
+    /// **§3.5.4 follow-up (NOT YET IMPLEMENTED):** the
+    /// underlying h2 protocol is multiplexed (many concurrent
+    /// in-flight requests on one conn), but the current
+    /// `PooledConn` API doesn't expose that — see the
+    /// `PooledConnH2::send_request` doc comment for details.
+    /// The enum dispatch here is for protocol selection (H1
+    /// vs H2), not for request-level concurrency. Future H2
+    /// multiplexing lands in the §3.5.4 follow-up PR.
     pub async fn send_request(
         &mut self,
         request: http::Request<UpstreamBody>,
@@ -511,19 +530,21 @@ impl PooledConn {
     }
 }
 
-impl Drop for PooledConn {
-    fn drop(&mut self) {
-        // Match on the variant. The inner Drop impls run
-        // automatically when the variant value goes out of scope
-        // at the end of the match arm — no explicit `drop()`
-        // call (Rust forbids `c.drop()` because it conflicts
-        // with the `Drop` trait method name).
-        match self {
-            PooledConn::H1(_c) => {}
-            PooledConn::H2(_c) => {}
-        }
-    }
-}
+// Note: there is **no** custom `Drop` impl on the `PooledConn`
+// enum. Rust drops enum fields automatically when the enum
+// value goes out of scope, so each variant's `Drop` impl
+// (`PooledConnH1::drop` + `PooledConnH2::drop`) runs at the
+// right time without us writing a no-op `impl Drop for
+// PooledConn`. A custom `Drop` here that just matches on the
+// variant would add code and comments without changing
+// behavior — and would block Rust's drop glue from running
+// the variant `Drop`s in the right order (Rust forbids
+// `c.drop()` because it conflicts with the `Drop` trait
+// method name; a `match self { ... }` body that does nothing
+// is a no-op that prevents the variant Drop from running
+// until *after* the `PooledConn::drop` body returns — which
+// happens to be the right behavior, but the no-op is
+// misleading and confusing for future readers).
 
 // ============================================================================
 // Pool: the per-host × per-protocol connection store
@@ -593,50 +614,72 @@ impl Pool {
         // if H1 has no conn. This is a tiebreaker; the
         // `connect()` is called once per request, so the order
         // doesn't matter for correctness.)
+        //
+        // **Loop-don't-peek:** the front entry might be stale
+        // (older than `idle_timeout`) or its driver might have
+        // already exited (the upstream closed the conn while
+        // it sat idle). We pop and inspect each entry until we
+        // find a usable one. Stale/finished entries are dropped
+        // (their `idle_timeout` + `dropped_conns` counters
+        // tick up). If the entire queue is unusable, we fall
+        // through to opening a fresh conn.
         {
             let mut per_host = self.inner.per_host.lock().unwrap();
             if let Some(entry) = per_host.get_mut(host) {
-                if let Some(idle) = entry.h1.pop_front() {
+                while let Some(idle) = entry.h1.pop_front() {
                     if idle.last_used.elapsed() >= self.inner.config.idle_timeout {
+                        // The driver has been running the conn
+                        // for at least `idle_timeout`; let it
+                        // drop naturally on Drop. Don't abort.
                         drop(idle.conn_driver);
                         let mut stats = self.inner.stats.lock().unwrap();
                         stats.stale_evictions += 1;
-                    } else if idle.conn_driver.is_finished() {
+                        continue;
+                    }
+                    // Check if the conn driver already errored
+                    // (the upstream closed the conn while idle).
+                    if idle.conn_driver.is_finished() {
                         drop(idle.conn_driver);
                         let mut stats = self.inner.stats.lock().unwrap();
                         stats.dropped_conns += 1;
-                    } else {
-                        let mut stats = self.inner.stats.lock().unwrap();
-                        stats.reused_h1_conns += 1;
-                        return Ok(PooledConn::H1(PooledConnH1 {
-                            sender: Some(idle.sender),
-                            conn_driver: Some(idle.conn_driver),
-                            host: host.to_string(),
-                            pool: Some(self.inner.clone()),
-                            errored: false,
-                        }));
+                        continue;
                     }
+                    let mut stats = self.inner.stats.lock().unwrap();
+                    stats.reused_h1_conns += 1;
+                    // Move the real driver (NOT a no-op stub) into
+                    // the new `PooledConn` so it lives until the
+                    // user drops the conn.
+                    return Ok(PooledConn::H1(PooledConnH1 {
+                        sender: Some(idle.sender),
+                        conn_driver: Some(idle.conn_driver),
+                        host: host.to_string(),
+                        pool: Some(self.inner.clone()),
+                        errored: false,
+                    }));
                 }
-                if let Some(idle) = entry.h2.pop_front() {
+                // Same loop-don't-peek for the H2 queue.
+                while let Some(idle) = entry.h2.pop_front() {
                     if idle.last_used.elapsed() >= self.inner.config.idle_timeout {
                         drop(idle.conn_driver);
                         let mut stats = self.inner.stats.lock().unwrap();
                         stats.stale_evictions += 1;
-                    } else if idle.conn_driver.is_finished() {
+                        continue;
+                    }
+                    if idle.conn_driver.is_finished() {
                         drop(idle.conn_driver);
                         let mut stats = self.inner.stats.lock().unwrap();
                         stats.dropped_conns += 1;
-                    } else {
-                        let mut stats = self.inner.stats.lock().unwrap();
-                        stats.reused_h2_conns += 1;
-                        return Ok(PooledConn::H2(PooledConnH2 {
-                            sender: Some(idle.sender),
-                            conn_driver: Some(idle.conn_driver),
-                            host: host.to_string(),
-                            pool: Some(self.inner.clone()),
-                            errored: false,
-                        }));
+                        continue;
                     }
+                    let mut stats = self.inner.stats.lock().unwrap();
+                    stats.reused_h2_conns += 1;
+                    return Ok(PooledConn::H2(PooledConnH2 {
+                        sender: Some(idle.sender),
+                        conn_driver: Some(idle.conn_driver),
+                        host: host.to_string(),
+                        pool: Some(self.inner.clone()),
+                        errored: false,
+                    }));
                 }
             }
         }
