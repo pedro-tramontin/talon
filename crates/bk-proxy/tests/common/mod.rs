@@ -341,7 +341,12 @@ async fn serve_one(acceptor: TlsAcceptor, tcp: tokio::net::TcpStream) -> Result<
 /// payloads the §3.3 unit tests used).
 pub struct EchoAssertion {
     /// The unique token that should be present in both the
-    /// request and the response body.
+    /// request and the response body. Used by
+    /// `mitm_roundtrip_through_in_process_tls_origin` (PR
+    /// #21) to assert the response body actually contains
+    /// the token. Other tests may ignore this field (they
+    /// use the full-body-echo assertion instead).
+    #[allow(dead_code)]
     pub token: String,
     /// The full request body the test sends.
     pub request_body: Vec<u8>,

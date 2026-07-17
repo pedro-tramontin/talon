@@ -207,14 +207,33 @@ impl Proxy {
 }
 
 /// Build the default upstream TLS config (Mozilla CA bundle via
-/// `webpki-roots`, no client auth). Used by [`Proxy::new`] to
-/// construct the upstream connection pool's shared `ClientConfig`.
+/// `webpki-roots`, no client auth). Used by [`Proxy::new`] and
+/// [`Proxy::new_with_pool`] to construct the upstream connection
+/// pool's shared `ClientConfig`.
+///
+/// **§3.5:** the config advertises ALPN `[h2, http/1.1]`. h2
+/// first (modern preference — every browser talks h2 today, plus
+/// the major CDNs), http/1.1 second (fallback for origins that
+/// don't speak h2 — internal services, older deployments). The
+/// pool's `Pool::connect` reads the negotiated ALPN from the
+/// `rustls::ClientConnection` after the handshake and returns
+/// either a `PooledConn::H1` or a `PooledConn::H2` accordingly.
+///
+/// `Proxy::new_with_upstream_tls_config` is the escape hatch for
+/// callers who need a custom ALPN list (e.g. a private-CA
+/// internal service that only speaks h2); they build the
+/// `ClientConfig` themselves and the pool uses it as-is.
 fn build_default_upstream_tls_config() -> rustls::ClientConfig {
     let mut root_store = rustls::RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    rustls::ClientConfig::builder()
+    let mut cfg = rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
-        .with_no_client_auth()
+        .with_no_client_auth();
+    // §3.5: advertise h2 first, http/1.1 second. The server
+    // picks the first one it supports (per RFC 7301 §3.2,
+    // server preference wins).
+    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    cfg
 }
 
 #[cfg(test)]
