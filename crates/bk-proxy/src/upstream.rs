@@ -21,7 +21,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response};
 use tracing::debug;
 
-use crate::upstream_pool::Pool;
+use crate::upstream_pool::{Pool, PooledConn};
 
 /// The body type the proxy sends to the upstream. A streaming
 /// body so POST/PUT/PATCH/DELETE requests can forward their
@@ -55,7 +55,14 @@ pub type UpstreamBody = http_body_util::StreamBody<
 pub type UpstreamResponseBody = Incoming;
 
 /// Send a single HTTP/1.1 request to the upstream and return its
-/// response. The body is streamed, not buffered.
+/// response head. The body is **NOT** drained here — the caller
+/// must fully consume the returned [`Response<Incoming>`]'s body
+/// before dropping the [`PooledConn`], or the pool will hand
+/// the same conn to a concurrent request and the two will
+/// interleave on the wire.
+///
+/// See [`crate::upstream_pool::PooledConn::send_request`] for
+/// the full caller-contract rationale.
 ///
 /// `host` is the SNI from the CONNECT request — used as the upstream
 /// hostname for DNS resolution, the SNI for upstream TLS, and the
@@ -70,20 +77,24 @@ pub async fn forward_request(
     host: &str,
     request: Request<UpstreamBody>,
     pool: &Pool,
-) -> Result<Response<UpstreamResponseBody>> {
-    forward_request_with_tls_config(host, request, pool).await
+) -> Result<(PooledConn, Response<UpstreamResponseBody>)> {
+    forward_request_via_pool(host, request, pool).await
 }
 
-/// Test-only variant of `forward_request`. The test should
-/// build a [`Pool`] with a custom `ClientConfig` (e.g. one that
-/// trusts a test `RootCa`) and pass it here. **Not part of
-/// the public surface; do not call from non-test code.**
+/// Internal entry point for `forward_request` (and the only
+/// function that needs the `[doc(hidden)]` test-only variant).
+/// Renamed from `forward_request_with_tls_config` in PR #20 /
+/// Copilot #2: the function no longer takes a TLS config
+/// (that lives on the [`Pool`]); it takes a `&Pool`. The old
+/// name was misleading because there was no longer a "with
+/// TLS config" variant to contrast against — the only TLS
+/// configuration in the system is the one stored on the pool.
 #[doc(hidden)]
-pub async fn forward_request_with_tls_config(
+pub async fn forward_request_via_pool(
     host: &str,
     request: Request<UpstreamBody>,
     pool: &Pool,
-) -> Result<Response<UpstreamResponseBody>> {
+) -> Result<(PooledConn, Response<UpstreamResponseBody>)> {
     // Acquire a pooled connection (or open a fresh one if the
     // pool is empty for this host). The `PooledConn` is RAII:
     // dropping it returns the conn + its driver to the pool
@@ -120,12 +131,14 @@ pub async fn forward_request_with_tls_config(
     };
 
     debug!(host = %host, status = %response.status(), "upstream response received");
-    // `pooled` is dropped here. With `mark_errored` not called,
-    // `Drop` returns the conn + its driver to the pool. The
-    // next `connect()` will either reuse the conn (if the
-    // driver is still running) or evict it (if the upstream
-    // closed the conn in the meantime).
-    Ok(response)
+    // CRITICAL (PR #19 / §3.3.6 follow-up #1): the caller must
+    // hold `pooled` until the response body is fully drained.
+    // Returning the tuple `(PooledConn, Response)` puts that
+    // responsibility on the caller; dropping the `PooledConn`
+    // before the body drains is a use-error that the pool can
+    // detect (the conn's driver exits on read-cancel, the next
+    // `connect()` evicts the conn) but cannot prevent.
+    Ok((pooled, response))
 }
 
 /// Build a `hyper::Request<UpstreamBody>` for any HTTP method the
@@ -133,9 +146,14 @@ pub async fn forward_request_with_tls_config(
 /// browser-side method (GET, POST, PUT, etc.); the `path_and_query`
 /// is the origin-form request-target; the `body` is a streaming
 /// `UpstreamBody` (use `empty_upstream_body()` for the GET case,
-/// or `forward_incoming_body(...)` to forward an `Incoming` body
-/// from the browser side). The `Host:` header is **set by us** to
-/// the SNI host (not the browser's Host header).
+/// or `build_body_from_incoming(...)` to forward an `Incoming`
+/// body from the browser side). The `Host:` header is **set by
+/// us** to the SNI host (not the browser's Host header).
+///
+/// PR #20 / Copilot #3: the previous version of this doc
+/// referenced `forward_incoming_body(...)`, which is a
+/// non-existent function in this module. The actual exported
+/// helper is `build_body_from_incoming`.
 ///
 /// ## Request-target: origin-form, not absolute-form
 ///
@@ -352,11 +370,12 @@ mod tests {
         let chunk_size = 100usize * 1024; // 100 KB
         let total_bytes = chunk_count * chunk_size;
 
-        let stream = futures_util::stream::iter((0..chunk_count).map(|i| {
-            // Build the chunk bytes inside the closure so they
-            // don't borrow `chunk_size` (which would make the
-            // closure non-`'static`).
-            let bytes = vec![(i & 0xFF) as u8; 100 * 1024]; // 100 KB
+        // Move `chunk_size` into the closure (it's `Copy`, so this
+        // is free) so the chunk byte length tracks the variable
+        // instead of being a magic number. If `chunk_size` changes,
+        // the test body length changes too.
+        let stream = futures_util::stream::iter((0..chunk_count).map(move |i| {
+            let bytes = vec![(i & 0xFF) as u8; chunk_size];
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(http_body::Frame::data(Bytes::from(
                 bytes,
             )))

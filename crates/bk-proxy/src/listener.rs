@@ -242,20 +242,107 @@ async fn handle_connection(proxy: Arc<Proxy>, stream: TcpStream, peer_addr: std:
             };
 
             match crate::upstream::forward_request(&host, upstream_req, &upstream_pool).await {
-                Ok(resp) => {
-                    // Capture the actual upstream status (not
-                    // hard-coded 200 — the old bug). Emit
-                    // per-request so keep-alive connections
-                    // don't batch N requests into one event.
+                Ok((mut pooled, resp)) => {
+                    // CRITICAL (PR #19 / §3.3.6 follow-up #1):
+                    // `pooled` MUST stay in scope until the
+                    // response body is fully drained. We
+                    // collect the body into `Bytes` here
+                    // (the upstream → proxy hop) and return
+                    // a `Full<Bytes>` body to the browser
+                    // (the proxy → browser hop). The
+                    // collection forces the upstream body
+                    // to be fully drained before `pooled`
+                    // drops at the end of this match arm,
+                    // so the conn returns to the pool only
+                    // when the upstream → proxy side is
+                    // complete. The browser → proxy side
+                    // uses the fully-owned `Full<Bytes>`
+                    // body and has no live reference to
+                    // the conn.
+                    //
+                    // Body buffering is a deliberate
+                    // v0.1 tradeoff: the §3.3.5 streaming
+                    // guarantee is for REQUEST bodies
+                    // (500 MB upload OOMs the buffered
+                    // variant); RESPONSE bodies are
+                    // small for typical web-security
+                    // workloads and the §3.6 engine
+                    // integration buffers to storage
+                    // anyway. If a v0.5+ use case needs
+                    // streaming responses, the fix is
+                    // to wrap the `Incoming` in a
+                    // custom `Body` that holds the
+                    // `PooledConn` in its `Drop` impl.
                     let status = resp.status().as_u16();
+                    let (parts, body) = resp.into_parts();
+                    // Collect the upstream body to `Bytes`. The
+                    // error type is `hyper::Error` (not `Infallible`
+                    // — hyper's `Incoming` poll can fail with a
+                    // network read error). We map it to a 502 and
+                    // return early so the conn drops at the end of
+                    // the closure scope (after the 502 is sent).
+                    let body_bytes: bytes::Bytes = match body.collect().await {
+                        Ok(c) => c.to_bytes(),
+                        Err(e) => {
+                            // PR #20 / Copilot review #1: a body
+                            // read error means the conn is
+                            // unusable (the driver has exited or
+                            // the upstream sent garbage). Mark
+                            // the conn errored so `Drop`
+                            // discards it instead of returning
+                            // a poisoned conn to the pool.
+                            // Also log the underlying error
+                            // (the previous version dropped it
+                            // with `_e`).
+                            tracing::error!(error = %e, "upstream body collect failed");
+                            pooled.mark_errored();
+                            let body: http_body_util::combinators::BoxBody<
+                                bytes::Bytes,
+                                std::convert::Infallible,
+                            > = http_body_util::Full::new(bytes::Bytes::from_static(
+                                b"upstream body read failed\n",
+                            ))
+                            .map_err(|never| match never {})
+                            .boxed();
+                            let resp = hyper::Response::builder().status(502).body(body).unwrap();
+                            events.send(ProxyEvent::RequestForwarded {
+                                host: host.clone(),
+                                status: 502,
+                                bytes_in: 0,
+                                bytes_out: 0,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                            });
+                            return Ok::<_, std::convert::Infallible>(resp);
+                        }
+                    };
+                    let bytes_out = body_bytes.len() as u64;
+                    // Type-annotate so the h2::Builder's `E`
+                    // parameter can be inferred as `Infallible`
+                    // (without the annotation the compiler
+                    // can't unify across the two match arms
+                    // and falls back to `()`).
+                    let body: http_body_util::combinators::BoxBody<
+                        bytes::Bytes,
+                        std::convert::Infallible,
+                    > = http_body_util::Full::new(body_bytes)
+                        .map_err(|never| match never {})
+                        .boxed();
+                    let resp = hyper::Response::from_parts(parts, body);
                     events.send(ProxyEvent::RequestForwarded {
                         host: host.clone(),
                         status,
                         bytes_in: 0,
-                        bytes_out: 0,
+                        bytes_out,
                         duration_ms: started.elapsed().as_millis() as u64,
                     });
-                    Ok::<_, std::convert::Infallible>(resp.map(|b| b.boxed()))
+                    // `pooled` drops at the end of this
+                    // match arm. With the upstream body
+                    // now fully drained, dropping the
+                    // conn is safe — the conn's driver
+                    // has nothing left to do but wait
+                    // for the next request on the
+                    // keep-alive stream.
+                    Ok::<_, std::convert::Infallible>(resp)
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "upstream forward failed");
