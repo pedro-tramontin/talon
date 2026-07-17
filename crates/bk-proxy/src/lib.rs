@@ -95,6 +95,38 @@ impl Proxy {
         }
     }
 
+    /// Build a new [`Proxy`] with a fully-custom upstream TLS config
+    /// and a custom pool config. Use this when the upstream sites use
+    /// a private CA (corporate MITM, internal services) that the
+    /// Mozilla bundle doesn't trust, or when the integration tests
+    /// need to plug in a one-off trust anchor (e.g. the in-process
+    /// TLS test origin from `tests/common/mod.rs`).
+    ///
+    /// The provided [`ClientConfig`] is wrapped in an `Arc` and
+    /// shared across every connection handler via the pool. The
+    /// caller is responsible for keeping the config valid for the
+    /// lifetime of the proxy.
+    ///
+    /// `Proxy::new_with_upstream_tls_config` (no `Arc<ClientConfig>`
+    /// arg) is intentionally not provided — the simple constructors
+    /// always use the Mozilla bundle, which is the right default.
+    /// Test-only trust anchors (e.g. an in-process test origin) are
+    /// the load-bearing use case for this entry point.
+    pub fn new_with_upstream_tls_config(
+        config: ProxyConfig,
+        root_ca: Arc<RootCa>,
+        pool_config: PoolConfig,
+        upstream_tls: Arc<rustls::ClientConfig>,
+    ) -> Self {
+        let upstream_pool = Pool::new(pool_config, upstream_tls);
+        Self {
+            config,
+            root_ca,
+            events: ProxyEventBus::new(),
+            upstream_pool,
+        }
+    }
+
     /// Get a cloneable handle to the event bus. Callers can subscribe
     /// before calling [`Proxy::run`] to avoid missing early events.
     pub fn events(&self) -> ProxyEventBus {
