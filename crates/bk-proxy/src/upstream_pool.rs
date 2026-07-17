@@ -34,8 +34,14 @@
 //! ## Connection lifetime
 //!
 //! - `Pool::connect(host)` returns a [`PooledConn`].
-//! - The user calls `sender.send_request(request).await` on the
-//!   [`PooledConn::sender`] field.
+//! - The user calls [`PooledConn::send_request`] (a method
+//!   that takes `&mut self` and forwards to the inner sender).
+//!   **PR #20 / Copilot #4:** the previous version of this
+//!   doc told users to call `sender.send_request(...)` on a
+//!   `PooledConn::sender` field, but `sender` is private
+//!   (and the field is `Option<SendRequest<UpstreamBody>>`
+//!   to be `Option::take`-safe on drop, not for external
+//!   access). The intended API is `pooled.send_request(...)`.
 //! - The user reads the response body and either drops the
 //!   [`PooledConn`] (returning the conn + its driver to the pool)
 //!   or calls [`PooledConn::mark_errored`] to mark it for discard.
@@ -125,8 +131,12 @@ pub struct PoolStats {
 }
 
 struct IdleConn {
-    /// The hyper H1 sender. Cloneable; lets us send multiple
-    /// requests on the same connection (H1 keep-alive semantics).
+    /// The hyper H1 sender. Reusable for sequential H1
+    /// keep-alive requests; **not** `Clone` (the body is a
+    /// trait object). The pool's [`PooledConn`] API exposes a
+    /// [`PooledConn::send_request`] method that takes `&mut
+    /// self` and forwards to the inner sender, precisely to
+    /// avoid the `Clone` requirement.
     sender: SendRequest<UpstreamBody>,
     /// The connection driver task handle. When the user drops
     /// the `PooledConn` and the conn is returned to the pool,
@@ -196,13 +206,39 @@ impl PooledConn {
     /// `Option::take` the sender (which would break
     /// `Drop`'s return-to-pool path).
     ///
-    /// **Caller contract:** the returned `Response` borrows
-    /// the request body that was sent — the caller should
-    /// drop the `PooledConn` only AFTER the response body
-    /// is fully consumed (or the conn will be returned to
-    /// the pool while a frame is mid-flight, which is
-    /// fine for the H1 keep-alive case but is worth
-    /// documenting).
+    /// **Caller contract (this is the load-bearing safety
+    /// rule for the pool):** the returned `Response` reads
+    /// from the same connection that the request was written
+    /// to. The caller MUST keep this `PooledConn` alive
+    /// until the response body is **fully drained**
+    /// (or has errored). Dropping the `PooledConn` while
+    /// the response body is still in flight returns the
+    /// connection to the pool's idle queue, where a future
+    /// `pool.connect(host)` call may hand it to a second
+    /// concurrent request — at which point the two
+    /// request/response pairs would interleave on the same
+    /// TCP+TLS stream, producing malformed HTTP/1.1 to
+    /// both upstreams and to the browser.
+    ///
+    /// **Why we don't have a `body_finished` guard on the
+    /// pool:** adding one would require the `Response`'s
+    /// `Body` to signal completion back to the pool, which
+    /// means either (a) a custom `Body` wrapper that holds
+    /// the `PooledConn` and drops it on `Drop::drop`, or
+    /// (b) the caller calls `pooled.mark_body_finished()`
+    /// after the last byte. Both add API surface. The
+    /// current shape — return `(PooledConn, Response)`
+    /// and let the caller hold the conn — is the smallest
+    /// surface that maintains safety. (See `forward_request`
+    /// in `crate::upstream` for the canonical use.)
+    ///
+    /// **What the `Incoming` body gives you for free:**
+    /// if the body is dropped before being fully drained,
+    /// hyper cancels the underlying read, which causes the
+    /// connection driver to exit with an error, which
+    /// makes the next `pool.connect()` evict the conn.
+    /// So even if a caller misuses the API, the conn
+    /// self-destructs rather than poisoning the pool.
     pub async fn send_request(
         &mut self,
         request: http::Request<UpstreamBody>,
@@ -513,6 +549,66 @@ mod tests {
              `pooled.sender.take()`, which made Drop early-return and the \
              pool never reuse anything. The §3.3.5 fix routes the request \
              through a method on PooledConn that takes &mut self."
+        );
+    }
+
+    /// Source-grep guard test: the listener must hold the
+    /// `PooledConn` until the response body is fully drained.
+    /// Regression for PR #19 / §3.3.6 follow-up #1 (Copilot
+    /// flagged the latent use-after-free: dropping the
+    /// `PooledConn` before the body is drained would let the
+    /// pool hand the same conn to a concurrent request →
+    /// interleaved frames on the wire).
+    ///
+    /// The shape of the fix: `forward_request` returns
+    /// `(PooledConn, Response)`. The listener destructures
+    /// with `(_pooled, resp)` and collects the body to
+    /// `Bytes` BEFORE returning the response. The `_pooled`
+    /// binding keeps the conn alive through the body
+    /// collect.
+    #[test]
+    fn listener_holds_pooled_conn_until_body_drained() {
+        let src = include_str!("listener.rs");
+        let production_src = src
+            .split_once("#[cfg(test)]")
+            .map(|(p, _)| p)
+            .unwrap_or(src);
+        // The destructure pattern: `Ok((mut pooled, resp)) => ...`
+        // — must bind the conn (mutably) so it stays in scope
+        // through the body collect and so the error path can
+        // call `pooled.mark_errored()` (PR #20 Copilot #1).
+        assert!(
+            production_src.contains("Ok((mut pooled, resp))"),
+            "listener.rs must destructure forward_request's tuple as `Ok((mut pooled, resp)) => ...` \
+             to keep the PooledConn alive until the response body is drained AND to allow the \
+             body-collect error path to call `pooled.mark_errored()`. Dropping the conn before \
+             the body drains lets the pool hand the same conn to a concurrent request → interleaved H1 frames."
+        );
+        // The body must be collected BEFORE the match arm ends,
+        // so the conn's drop (at end of the arm) is safe.
+        assert!(
+            production_src.contains("body.collect()"),
+            "listener.rs must call `body.collect()` on the upstream response body \
+             to drain it before the PooledConn drops. Without the collect, the \
+             conn returns to the pool while the body is still in flight."
+        );
+        // The body-collect error path must mark the conn
+        // errored so a poisoned conn isn't returned to the
+        // pool (PR #20 Copilot #1 follow-up).
+        assert!(
+            production_src.contains("pooled.mark_errored()"),
+            "listener.rs body-collect error path must call `pooled.mark_errored()` to discard \
+             a poisoned conn. Without it, a conn that errored during body read would be \
+             returned to the pool and handed to a future request."
+        );
+        // The conn return type from forward_request must be the
+        // tuple (so the listener is forced to destructure).
+        let upstream_src = include_str!("upstream.rs");
+        assert!(
+            upstream_src.contains(") -> Result<(PooledConn, Response<UpstreamResponseBody>)>"),
+            "upstream.rs::forward_request must return Result<(PooledConn, Response)>, \
+             not just Result<Response>. The tuple forces the caller to acknowledge \
+             the conn-lifetime contract."
         );
     }
 
