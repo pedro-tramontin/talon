@@ -28,7 +28,14 @@ pub struct ProxyConfigFile {
 }
 
 /// Runtime proxy configuration.
+///
+/// Marked `#[non_exhaustive]` per the Phase 10 plugin-system
+/// design contract (§5.1 item 1): v2 may add fields (e.g. a
+/// `plugin_dir: Option<PathBuf>` for the v2 plugin loader, or
+/// `wasm_fuel_limit: Option<u64>` for plugin sandbox tuning)
+/// without breaking v1's `ProxyConfig { ... }` struct literals.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ProxyConfig {
     /// The address the TCP listener binds to.
     pub listener_addr: SocketAddr,
