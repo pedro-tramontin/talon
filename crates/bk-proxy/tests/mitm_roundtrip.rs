@@ -272,7 +272,7 @@ async fn mitm_roundtrip_through_in_process_tls_origin() {
     assert_eq!(
         response.status(),
         200,
-        "expected 200, got {} (body: {:?})",
+        "expected 200, got {} (headers: {:?})",
         response.status(),
         response.headers()
     );
@@ -300,17 +300,57 @@ async fn mitm_roundtrip_through_in_process_tls_origin() {
         assertion.token,
     );
 
-    // 10. Shutdown the proxy cleanly. We don't strictly need to
-    //     assert on the `RequestForwarded` event (the test
+    // 10. Drop the h2 client side so the proxy's per-conn task
+    //     can drain. The `sender` was kept in scope to keep
+    //     the h2 client conn alive for the response read; once
+    //     the body is collected, dropping `sender` signals the
+    //     h2 client to send GOAWAY, which causes the proxy's
+    //     per-conn task to exit, which lets the accept loop
+    //     drain. **Copilot review (PR #22 #2):** without this
+    //     explicit drop, the test's spawned h2 client conn
+    //     task keeps the TLS stream open, the proxy's task
+    //     can't exit, and the accept loop's drain step
+    //     exceeds the 5s shutdown timeout.
+    drop(sender);
+    // Also wait for the spawned h2 client conn task to
+    // finish so the test doesn't leak the task across the
+    // function boundary. The task is `let conn_task = ...`
+    // above; we didn't store the handle, so we just give it
+    // a brief yield. (Best-effort: the conn will exit when
+    // the TLS stream closes after the proxy's task ends.)
+    tokio::task::yield_now().await;
+
+    // 11. Shutdown the proxy cleanly. We don't strictly need
+    //     to assert on the `RequestForwarded` event (the test
     //     could pass with the event missing if the proxy
     //     never reached the forward step), but we assert on
     //     the event-bus contract to be safe.
     //
     //     The proxy might shut down before we get to read the
     //     event (race with the conn task). Use a short timeout
-    //     and accept the race.
+    //     and accept the race on the event-bus side.
+    //
+    //     **Copilot review (PR #22 #2):** the previous version
+    //     silently discarded the `run_task` join result. If
+    //     `accept_loop` panicked or returned an error, the
+    //     test could still pass because the body roundtripped.
+    //     Assert on the join result so a real regression
+    //     surfaces in CI instead of being masked. Bounded by
+    //     a 10s timeout (5s wasn't enough on a busy CI
+    //     runner — the h2 conn drain is the slow part).
     shutdown_tx.send(true).unwrap();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), run_task).await;
+    let join_result = tokio::time::timeout(std::time::Duration::from_secs(10), run_task)
+        .await
+        .expect("run_task did not finish within 10s of shutdown");
+    // `join_result` is `Result<Result<(), anyhow::Error>, JoinError>`:
+    // - `Ok(Ok(()))` — clean shutdown
+    // - `Ok(Err(e))` — accept_loop returned an error
+    // - `Err(JoinError)` — accept_loop task panicked
+    match join_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("accept_loop returned an error: {e}"),
+        Err(e) => panic!("accept_loop task panicked: {e}"),
+    }
 
     // The event-bus assertion is best-effort. The test passes
     // as long as the body came back; the event check is
