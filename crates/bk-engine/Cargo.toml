@@ -20,3 +20,11 @@ tracing = { workspace = true }
 # code doesn't need either, so they live in dev-deps only.
 chrono = { workspace = true }
 tempfile = "3.10"
+
+# Force the integration test in tests/ to use edition 2021.
+# Without this, `async fn` and modern syntax fail with E0670
+# (treated as edition 2015).
+[[test]]
+name = "capture_loop_smoke"
+path = "tests/capture_loop_smoke.rs"
+edition = "2021"
