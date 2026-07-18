@@ -1,15 +1,17 @@
-//! Full event bus for the `bk-engine`. The Tauri UI, the MCP server
-//! (§3.5b), and the internal agent (§3.5c) all subscribe to this bus
-//! to react to state changes in the engine. The narrower MCP-narrowed
-//! bus is in `mcp_events.rs` — most subscribers only need the MCP
-//! events (smaller payloads, fewer concerns).
+//! Full event bus for the `bk-engine`. The Tauri UI subscribes to
+//! this bus to react to state changes in the engine. The MCP server
+//! (§3.5b) and the internal agent (§3.5c) subscribe to the narrower
+//! MCP bus in `mcp_events.rs` instead — they only need the 5
+//! MCP-shaped variants (smaller payloads, fewer concerns).
 //!
-//! Per the design contract (`2026-07-15_phase-03.5-agent-mcp.md`
-//! §3.5a), the bus carries **12 event types** for the v1 surface.
-//! `#[non_exhaustive]` is on the enum so future phases (Phase 6
-//! scope changes, Phase 7 fuzz jobs) can add variants without
-//! breaking the v1 shape. Any new variant must be added to
-//! `mcp_events::demux` so the MCP bus knows whether to demux it.
+//! Per the design contract §3.5a, the bus carries **12 event types**
+//! for the v1 surface: 9 wired to engine state changes (project
+//! open/close, exchange insert/update/star/delete, tag upsert/
+//! attach/detach) + 3 Phase 6/7 stubs (`ScopeChanged`, `FuzzStarted`,
+//! `FuzzFinished`) for forward-compat. `#[non_exhaustive]` is on the
+//! enum so future phases can add variants without breaking the v1
+//! shape. The demux from `EngineEvent` → `McpEvent` lives in
+//! `engine.rs` (not in this bus — the bus is a dumb pipe).
 //!
 //! **The bus is a `tokio::sync::broadcast` channel.** Slow consumers
 //! drop events (the broadcast API reports `RecvError::Lagged`); the
@@ -100,6 +102,13 @@ pub enum EngineEvent {
         job_id: String,
         project_id: ProjectId,
         config_summary: String,
+    },
+    /// Phase 7 stub. When a fuzz job finishes, the Fuzz view
+    /// shows the final stats. Not emitted in §3.5a.
+    FuzzFinished {
+        job_id: String,
+        project_id: ProjectId,
+        total_requests: u64,
     },
 }
 
