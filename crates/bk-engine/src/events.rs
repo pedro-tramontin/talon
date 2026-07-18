@@ -143,15 +143,29 @@ pub fn channel() -> (EventSender, EventReceiver) {
 mod tests {
     use super::*;
 
-    /// The bus must be `Clone`able for the sender (so the engine
-    /// can hand out additional senders cheaply) and the receiver
-    /// must be `Clone`able so multiple subscribers (UI + MCP
-    /// server) can each have their own.
+    /// The sender is `Clone`able so the engine can hand out
+    /// additional senders cheaply. `Sender::subscribe()` returns
+    /// a fresh `Receiver` per call (broadcast channels support
+    /// many independent subscribers); `Receiver` itself is NOT
+    /// `Clone` — to fan out to multiple consumers, each consumer
+    /// must call `Sender::subscribe()` and get its own receiver.
     #[test]
-    fn sender_and_receiver_are_cloneable() {
-        let (tx, rx) = channel();
+    fn sender_is_cloneable_receivers_are_independent() {
+        let (tx, mut rx1) = channel();
         let _tx2 = tx.clone();
-        let _rx2 = rx;
+        let mut rx2 = tx.subscribe();
+        // Send one event — both receivers must see it
+        // independently. A shared-receiver bug (e.g., accidentally
+        // returning rx1 from a second subscribe call) would fail
+        // this: only one of the two would receive.
+        tx.send(EngineEvent::ProjectClosed {
+            project_id: ProjectId::new(),
+        })
+        .unwrap();
+        let ev1 = rx1.try_recv().expect("rx1 should receive the event");
+        let ev2 = rx2.try_recv().expect("rx2 should receive the event");
+        assert!(matches!(ev1, EngineEvent::ProjectClosed { .. }));
+        assert!(matches!(ev2, EngineEvent::ProjectClosed { .. }));
     }
 
     /// A send on the sender is observed by a receiver. The smoke

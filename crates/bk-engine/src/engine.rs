@@ -59,10 +59,12 @@ impl Engine {
         })
     }
 
-    /// Subscribe to the full event bus. Each call returns a fresh
-    /// receiver — the broadcast channel supports multiple
-    /// subscribers. The receiver is `Clone`able so a single
-    /// subscriber can fan out further if needed.
+    /// Subscribe to the full event bus. Each call returns a fresh,
+    /// independent receiver — broadcast channels support any number
+    /// of concurrent subscribers, and each one observes every event
+    /// sent from that point forward. To fan out to N consumers
+    /// (e.g., the Tauri UI + the MCP server + the agent), call
+    /// this method N times.
     pub fn subscribe_events(&self) -> EventReceiver {
         self.event_tx.subscribe()
     }

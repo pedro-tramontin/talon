@@ -91,19 +91,40 @@ async fn drain_events(
     }
 }
 
-/// `subscribe_mcp_events()` returns a fresh receiver each time.
+/// `subscribe_events()` returns a fresh receiver each time.
 /// Pin the public surface so future refactors don't accidentally
 /// share a single receiver across subscribers.
-#[test]
-fn subscribe_mcp_events_returns_a_receiver() {
+#[tokio::test]
+async fn subscribe_mcp_events_returns_a_receiver() {
     let tmp = TempDir::new().unwrap();
     let engine = Engine::new(tmp.path()).unwrap();
-    let _rx1 = engine.subscribe_mcp_events();
-    let _rx2 = engine.subscribe_mcp_events();
-    // We don't assert they're different instances (broadcast::Receiver
-    // is Clone, so a single sender can have many receivers), but
-    // the API surface must not return a single shared receiver.
-    // The fact that the call returns without panicking is enough.
+    let mut rx1 = engine.subscribe_events();
+    let mut rx2 = engine.subscribe_events();
+    // Both receivers must observe the same event independently
+    // (a single shared receiver would fail this — only rx1 would
+    // see the event, not rx2). The "open project" emit on the
+    // full bus proves two independent subscriptions work.
+    let project = bk_core::Project::new("acme.bb", "acme.bb", "0.1.0");
+    let project_id = project.info.id;
+    engine.open_project(&project).unwrap();
+    let ev1 = tokio::time::timeout(Duration::from_millis(500), rx1.recv())
+        .await
+        .expect("rx1 should not time out")
+        .expect("rx1 should receive an event");
+    let ev2 = tokio::time::timeout(Duration::from_millis(500), rx2.recv())
+        .await
+        .expect("rx2 should not time out")
+        .expect("rx2 should receive an event");
+    for (label, ev) in [("rx1", &ev1), ("rx2", &ev2)] {
+        match ev {
+            bk_engine::EngineEvent::ProjectOpened {
+                project_id: pid, ..
+            } => {
+                assert_eq!(*pid, project_id, "{label} got wrong project_id");
+            }
+            other => panic!("{label} got unexpected event: {other:?}"),
+        }
+    }
 }
 
 /// The load-bearing test. Engine action → bus emit → observer
