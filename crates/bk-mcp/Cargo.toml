@@ -1,0 +1,25 @@
+[package]
+name = "bk-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP server exposing the bk-engine as tools for AI agents (Claude Desktop, etc.)"
+
+[dependencies]
+bk-core = { workspace = true }
+bk-engine = { workspace = true }
+bk-store = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = "1.0"
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+rmcp = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.10"
