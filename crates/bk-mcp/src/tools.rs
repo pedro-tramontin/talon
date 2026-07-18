@@ -42,8 +42,11 @@ use crate::error::McpError;
 pub type ToolHandler = fn(&Engine, Value) -> Result<Value, McpError>;
 
 /// The full dispatch table. Indexed by MCP tool name at server
-/// startup; unknown tool names at request time return
-/// `McpError::UnknownTool` before any handler is called.
+/// startup; unknown tool names at request time are handled
+/// directly by `server::run_with_streams` (it returns a
+/// `tools/call` response with `isError: true` and a text
+/// payload "unknown tool: <name>", without ever invoking this
+/// registry — see `server.rs` line ~395 for the dispatch).
 pub static TOOL_REGISTRY: &[(&str, ToolHandler)] = &[
     // Project lifecycle
     ("talon_open_project", talon_open_project as ToolHandler),
@@ -132,6 +135,8 @@ const MAX_SUMMARY_LEN: usize = 512;
 const MAX_NAME_LEN: usize = 200;
 const MAX_NOTES_LEN: usize = 64 * 1024; // 64 KiB
 const MAX_COLOR_LEN: usize = 32; // "#rrggbb" or "#rrggbbaa"
+const MAX_VERSION_LEN: usize = 32; // "0.1.0" + room for future semver
+const MAX_BLOCKED_REASON_LEN: usize = 512; // "scope: out of scope (api.example.com)"
 
 fn require_bounded_str<'a>(
     args: &'a Value,
@@ -146,6 +151,25 @@ fn require_bounded_str<'a>(
         )));
     }
     Ok(s)
+}
+
+/// Optional bounded string: returns `None` if the key is
+/// missing, `Some(s)` if the key is present and within the
+/// cap, or an `InvalidArgs` error if the key is present and
+/// exceeds the cap.
+fn optional_bounded_str(
+    args: &Value,
+    key: &str,
+    max_len: usize,
+) -> Result<Option<String>, McpError> {
+    match args.get(key).and_then(|v| v.as_str()) {
+        None => Ok(None),
+        Some(s) if s.len() > max_len => Err(McpError::InvalidArgs(format!(
+            "{key} exceeds {max_len} bytes (got {})",
+            s.len()
+        ))),
+        Some(s) => Ok(Some(s.to_string())),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +187,8 @@ pub fn talon_open_project(engine: &Engine, args: Value) -> Result<Value, McpErro
     let name = require_bounded_str(&args, "name", MAX_NAME_LEN)?.to_string();
     let target_host = require_bounded_str(&args, "target_host", MAX_NAME_LEN)?.to_string();
     let project_id: ProjectId = require_project_id(&args)?;
-    let version = optional_str(&args, "talon_version").unwrap_or("0.1.0");
+    let version = optional_bounded_str(&args, "talon_version", MAX_VERSION_LEN)?
+        .unwrap_or_else(|| "0.1.0".to_string());
     // Build a default Project (which generates a fresh id, sane
     // timestamps, derived db_filename, default settings), then
     // override the id with the LLM-supplied one.
@@ -209,7 +234,7 @@ pub fn talon_insert_exchange(engine: &Engine, args: Value) -> Result<Value, McpE
         .ok_or_else(|| McpError::InvalidArgs("request required".into()))?;
     let response_json = args.get("response");
     let summary = require_bounded_str(&args, "summary", MAX_SUMMARY_LEN)?.to_string();
-    let blocked_reason = optional_str(&args, "blocked_reason").map(String::from);
+    let blocked_reason = optional_bounded_str(&args, "blocked_reason", MAX_BLOCKED_REASON_LEN)?;
 
     let request: bk_core::Request = serde_json::from_value(request_json.clone())
         .map_err(|e| McpError::InvalidArgs(format!("request: {e}")))?;

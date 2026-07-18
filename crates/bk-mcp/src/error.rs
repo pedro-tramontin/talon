@@ -90,22 +90,28 @@ impl McpError {
 /// response value. The MCP transport expects either a `result` or
 /// an `error` — never both.
 ///
-/// **Security note (added 2026-07-18):** `McpError::Engine(_)` carries
-/// the original `EngineError` whose `Display` impl may embed
-/// SQLite error text, file paths, or SQL fragments. We log the
-/// full error server-side and emit a generic message to the
-/// caller. The structured `code` field still tells the LLM what
-/// went wrong (-32602 vs -32603) so it can react correctly.
+/// **Security note (added 2026-07-18):** `McpError::Engine(_)` for
+/// non-`ProjectNotOpen` variants carries the original `EngineError`
+/// whose `Display` impl may embed SQLite error text, file paths,
+/// or SQL fragments. We log the full error server-side and emit
+/// a generic message to the caller. The structured `code` field
+/// still tells the LLM what went wrong (-32602 vs -32603) so it
+/// can react correctly.
+///
+/// `ProjectNotOpen` is the exception: the LLM can recover from it
+/// by calling `talon_open_project` first, so we keep the message
+/// (which is just "project not open: <uuid>" — no SQL/path leak).
+/// The uuid is one the LLM supplied itself in the first place.
 pub fn result_to_response<T: serde::Serialize>(result: Result<T, McpError>) -> serde_json::Value {
     match result {
         Ok(value) => serde_json::json!({ "ok": true, "value": value }),
         Err(e) => {
-            // If this is an engine error, log the full Display
-            // text server-side and substitute a generic message.
-            // The code (-32602/-32603) is preserved so the LLM
-            // can still distinguish "fix your args" from
-            // "internal server problem".
             let message = match &e {
+                // `ProjectNotOpen` is LLM-actionable and carries
+                // no leakable content. Keep the message.
+                McpError::Engine(bk_engine::EngineError::ProjectNotOpen(_)) => e.to_string(),
+                // All other engine errors get sanitized to a
+                // generic string. The full error is logged.
                 McpError::Engine(inner) => {
                     tracing::error!(error = %inner, "mcp engine error");
                     "internal engine error".to_string()
@@ -164,38 +170,81 @@ mod tests {
         assert!(v["error"]["message"].as_str().unwrap().contains("bad"));
     }
 
-    /// `McpError::Engine(_)` carries the full inner `EngineError`.
-    /// For privacy (the inner error may embed SQLite text, file
-    /// paths, or SQL fragments), `result_to_response` replaces
-    /// the message with a generic string. The code (-32603) is
-    /// preserved so the LLM can still distinguish "internal
-    /// problem" from "fix your args".
-    ///
-    /// Note: we can't easily construct an `EngineError` directly
-    /// in tests (its variants may have private fields), so we
-    /// verify the sanitization switch *exists* by asserting that
-    /// `McpError::Internal` (a sibling path with the same
-    /// `e.to_string()` shape) does NOT sanitize. The actual
-    /// `McpError::Engine` sanitization is covered by the
-    /// `_engine_error_sanitization_in_server` test in
-    /// `error::tests`.
+    /// **Integration test for security review MEDIUM #2**
+    /// (added 2026-07-18, fixes PR #25 Copilot finding
+    /// #3607982870): when a tool handler returns an
+    /// `McpError::Engine(_)` carrying a `StoreError` whose
+    /// `Display` impl would otherwise leak SQL/SQLite/path
+    /// text to the LLM, `result_to_response` must sanitize
+    /// the message to a generic string. The structured `code`
+    /// field is preserved so the LLM can still distinguish
+    /// "fix your args" from "internal problem".
     #[test]
-    fn result_to_response_engine_error_message_is_sanitized() {
-        let leaky = "UNIQUE constraint failed: exchanges.id (at /home/user/.local/share/talon/projects/acme.db)";
-        let v: serde_json::Value = result_to_response::<i32>(Err(McpError::Internal(leaky.into())));
+    fn engine_error_message_is_sanitized_in_response() {
+        // Construct a `StoreError` whose Display impl would
+        // leak a path. `StoreError::Invalid(String)` formats
+        // as "invalid input: <text>" — simulating a SQLite
+        // error that references a DB path or SQL fragment.
+        let leaky = bk_store::StoreError::Invalid(
+            "sqlite error: UNIQUE constraint failed: exchanges.id (at /home/user/.local/share/talon/projects/acme-bb-2026-07-18.db)"
+                .into(),
+        );
+        let engine_err: bk_engine::EngineError = leaky.into();
+        let v: serde_json::Value = result_to_response::<i32>(Err(McpError::Engine(engine_err)));
         assert_eq!(v["ok"], serde_json::json!(false));
-        assert_eq!(v["error"]["code"], serde_json::json!(-32603));
-        // `McpError::Internal` is NOT sanitized (it's a
-        // server-side bug, not a user/engine boundary); the
-        // message flows through unchanged. The sanitization
-        // applies ONLY to `McpError::Engine(_)`.
+        assert_eq!(
+            v["error"]["code"],
+            serde_json::json!(-32603),
+            "EngineError → -32603 (Internal error) per design contract"
+        );
+        let message = v["error"]["message"].as_str().unwrap();
+        // The sanitized message must NOT contain the path, the
+        // SQL fragment, or the SQLite error text.
+        assert_eq!(
+            message, "internal engine error",
+            "EngineError message must be sanitized to a generic string, got: {message}"
+        );
         assert!(
-            v["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("UNIQUE constraint failed"),
-            "Internal error message should pass through verbatim (engine errors are sanitized, not internal errors): got: {}",
-            v["error"]["message"]
+            !message.contains("UNIQUE constraint"),
+            "sanitized message must not contain SQL error text"
+        );
+        assert!(
+            !message.contains("/home/user"),
+            "sanitized message must not contain file paths"
+        );
+        assert!(
+            !message.contains("acme-bb"),
+            "sanitized message must not contain the project name (leaks project structure)"
+        );
+    }
+
+    /// **Integration test for security review MEDIUM #2
+    /// (companion):** when a tool handler returns
+    /// `McpError::Engine(EngineError::ProjectNotOpen(_))`,
+    /// the message is *kept* (the LLM can react — "call
+    /// talon_open_project first") but the code is still
+    /// -32602 (Invalid params, LLM-actionable).
+    ///
+    /// Why we keep the message here: `ProjectNotOpen` is
+    /// recoverable by the LLM, and the message is just
+    /// "project not open: <uuid>" — no SQL/path leak.
+    #[test]
+    fn engine_error_project_not_open_message_is_kept_but_code_is_invalid_params() {
+        let engine_err = bk_engine::EngineError::ProjectNotOpen("acme-bb-2026-07-18".into());
+        let v: serde_json::Value = result_to_response::<i32>(Err(McpError::Engine(engine_err)));
+        assert_eq!(
+            v["error"]["code"],
+            serde_json::json!(-32602),
+            "ProjectNotOpen maps to -32602 (Invalid params, LLM-actionable)"
+        );
+        let message = v["error"]["message"].as_str().unwrap();
+        // The LLM can see the project id so it can call
+        // talon_open_project with the right id. This is
+        // intentional and not a leak (the LLM already
+        // supplied the id in the first place).
+        assert!(
+            message.contains("acme-bb-2026-07-18"),
+            "ProjectNotOpen message should keep the project id, got: {message}"
         );
     }
 }

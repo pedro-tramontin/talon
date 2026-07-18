@@ -25,12 +25,21 @@
 //!
 //! The crate has three pieces:
 //!
-//! - [`server`]: the `McpServer` struct, the main loop, and the
-//!   rmcp-based stdio transport. Holds an `Engine` and an event
-//!   subscription.
+//! - [`server`]: the `McpServer` struct and the main loop. The
+//!   transport is a **hand-rolled JSON-RPC 2.0 stdio loop** in
+//!   `run_with_streams`, NOT rmcp-based. Tool handlers return a
+//!   JSON payload that the transport wraps into the MCP
+//!   `content` array (each entry is
+//!   `{"type": "text", "text": <json>}`). The full rmcp-based
+//!   transport lands in a §3.5b-followup — the design contract
+//!   says "use rmcp" but rmcp 2.2's macro API requires per-tool
+//!   `#[tool]` attributes that are awkward to apply to a
+//!   function-pointer dispatch table. Holds an `Engine` and an
+//!   event-bus subscription.
 //! - [`tools`]: the 20-tool registry. Each tool is a function that
 //!   takes a `&Engine` and a `serde_json::Value` of args and returns
-//!   a `serde_json::Value` of MCP-shaped content.
+//!   a `serde_json::Value` (the tool's own payload, not the MCP
+//!   content envelope).
 //! - [`error`]: the `McpError` enum and the JSON-RPC error-code
 //!   mapping from `EngineError` per design-contract gotcha 2.
 //!

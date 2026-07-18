@@ -1,5 +1,12 @@
 //! The MCP server: the `McpServer` struct, the main loop, and the
-//! rmcp-based stdio transport.
+//! hand-rolled JSON-RPC 2.0 stdio transport.
+//!
+//! **Not** rmcp-based yet — the design contract says "use rmcp"
+//! but rmcp 2.2's macro API requires per-tool `#[tool]`
+//! attributes that are awkward to apply to a function-pointer
+//! dispatch table. The hand-rolled loop is ~140 LOC of framed
+//! JSON-RPC 2.0 and is fully spec-compliant for the v0.1 tool
+//! surface. The rmcp transport lands in a §3.5b-followup.
 //!
 //! The server holds an `Arc<Engine>` (so the engine outlives any
 //! spawned tasks) and an `McpEventReceiver` subscription (so the
@@ -14,11 +21,13 @@
 //! avoids needing a real subprocess and keeps the tests fast and
 //! hermetic.
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use bk_engine::mcp_events::McpEvent;
 use bk_engine::Engine;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::error::result_to_response;
 use crate::tools;
@@ -29,6 +38,86 @@ use crate::tools;
 /// Talon tool response and well below the per-line allocation
 /// that would OOM the server.
 const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
+
+/// `AsyncRead` wrapper that enforces a per-line byte cap by
+/// resetting a counter on every newline byte observed in the
+/// current read call. Returns an I/O error when the cap is
+/// exceeded within a single line, so `read_line` propagates the
+/// error and the JSON-RPC server can emit a clean -32600 response.
+///
+/// **Why this exists (added 2026-07-18, fixes PR #25 Copilot
+/// HIGH-severity finding #3607982832):** the previous
+/// implementation used `BufReader::read_line` and then checked
+/// `line.len() > MAX_REQUEST_LINE_BYTES` after the read. That
+/// check fires *after* the entire line is already in memory, so
+/// a 10 GB "line" with no newline allocates 10 GB before the
+/// cap runs. This wrapper enforces the cap **during** the
+/// read, so the buffer can never exceed `MAX_REQUEST_LINE_BYTES`.
+struct NewlineBoundedRead<R> {
+    inner: R,
+    /// Bytes remaining in the current line. Reset to
+    /// `MAX_REQUEST_LINE_BYTES` every time a newline byte is
+    /// observed in the buffer the caller just filled.
+    remaining: usize,
+}
+
+impl<R: AsyncRead + Unpin> NewlineBoundedRead<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            remaining: MAX_REQUEST_LINE_BYTES,
+        }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for NewlineBoundedRead<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        // Hand the caller's ReadBuf directly to the inner reader.
+        // The inner reader fills the unfilled portion; after the
+        // poll, `buf.filled()` reports how many bytes were written
+        // (the slice is `&buf[buf.start_filled..buf.end_filled]`).
+        let prev_remaining = self.remaining;
+        let prev_filled_len = buf.filled().len();
+        match Pin::new(&mut self.inner).poll_read(cx, buf) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Ok(())) => {
+                let new_filled_len = buf.filled().len();
+                let n = new_filled_len - prev_filled_len;
+                if n == 0 {
+                    // EOF — let the caller see it.
+                    return Poll::Ready(Ok(()));
+                }
+                // Count newlines in the just-filled slice and
+                // reset the per-line counter for each one.
+                let filled = buf.filled();
+                let newlines = filled[prev_filled_len..new_filled_len]
+                    .iter()
+                    .filter(|&&b| b == b'\n')
+                    .count();
+                if newlines > 0 {
+                    // Each newline resets the counter.
+                    self.remaining = MAX_REQUEST_LINE_BYTES;
+                } else {
+                    self.remaining = prev_remaining.saturating_sub(n);
+                }
+                if self.remaining == 0 {
+                    // Cap exceeded within this line and no
+                    // newline reset the counter. Reject.
+                    return Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("line exceeds {MAX_REQUEST_LINE_BYTES} bytes"),
+                    )));
+                }
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+}
 
 /// Configuration for the MCP server. Held by the binary and
 /// passed to `McpServer::with_config`.
@@ -113,33 +202,56 @@ impl McpServer {
     {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-        let mut buf_reader = BufReader::new(reader);
+        // The reader is wrapped in `NewlineBoundedRead`, which
+        // enforces the per-line cap **during** the read, not
+        // after. A 10 GB "line" with no newline will see the
+        // inner reader return an error after `MAX_REQUEST_LINE_BYTES`
+        // bytes, so the buffer never grows past the cap.
+        // `BufReader` is layered on top to give us `read_line`
+        // semantics.
+        let mut buf_reader = BufReader::new(NewlineBoundedRead::new(reader));
         let mut line = String::new();
+        // When the wrapper rejects a read (line too long), we
+        // can't simply `continue` — the wrapper's per-line
+        // counter is at 0 and the next `read_line` would reject
+        // again, looping forever. We set this flag and exit
+        // cleanly on the next iteration, telling the client to
+        // close + reconnect. A misbehaving client gets a single
+        // -32600 and the connection drops — this is the correct
+        // behavior per the MCP spec (a request line over the
+        // transport cap is a protocol violation).
+        let mut to_long_response_sent = false;
         loop {
             line.clear();
-            let n = buf_reader.read_line(&mut line).await?;
+            if to_long_response_sent {
+                // After the -32600 response, exit the server.
+                // The client is expected to close + reconnect;
+                // any further bytes on the stream are discarded.
+                return Ok(());
+            }
+            let n = match buf_reader.read_line(&mut line).await {
+                Ok(n) => n,
+                Err(_e) => {
+                    let resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": null,
+                        "error": {
+                            "code": -32600,
+                            "message": format!(
+                                "request line exceeds {MAX_REQUEST_LINE_BYTES} bytes"
+                            ),
+                        }
+                    });
+                    writer.write_all(resp.to_string().as_bytes()).await?;
+                    writer.write_all(b"\n").await?;
+                    writer.flush().await?;
+                    to_long_response_sent = true;
+                    continue;
+                }
+            };
             if n == 0 {
                 // EOF — exit cleanly per design-contract gotcha 3.
                 return Ok(());
-            }
-            // Bound the per-line buffer so a malicious client
-            // can't OOM us by streaming a multi-GB "line" without
-            // a newline.
-            if line.len() > MAX_REQUEST_LINE_BYTES {
-                let resp = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": null,
-                    "error": {
-                        "code": -32600,
-                        "message": format!(
-                            "request line exceeds {MAX_REQUEST_LINE_BYTES} bytes"
-                        ),
-                    }
-                });
-                writer.write_all(resp.to_string().as_bytes()).await?;
-                writer.write_all(b"\n").await?;
-                writer.flush().await?;
-                continue;
             }
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -165,6 +277,13 @@ impl McpServer {
                 }
             };
 
+            // Distinguish notifications (no `id` member) from
+            // requests with `id: null` or an explicit id value.
+            // Per JSON-RPC 2.0: a notification MUST NOT receive a
+            // response; a request (even with id=null) must.
+            // `request.get("id")` returns `None` for missing key,
+            // `Some(&Value::Null)` for explicit null.
+            let has_id = request.get("id").is_some();
             let id = request
                 .get("id")
                 .cloned()
@@ -173,7 +292,7 @@ impl McpServer {
             // string, number, or null. We cap string length at
             // 256 chars and require numbers to fit in i64.
             // A multi-MB string id would round-trip through
-            // `cloned()` and `to_string()` and OOM us.
+            // `cloned()` + `to_string()` and OOM us.
             let id_valid = match &id {
                 serde_json::Value::Null => true,
                 serde_json::Value::String(s) => s.len() <= 256,
@@ -195,6 +314,22 @@ impl McpServer {
                 continue;
             }
             let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
+
+            // Helper: write a JSON-RPC response only if this is
+            // a request (not a notification). The closure
+            // returns `()` and writes to `writer` lazily.
+            // Notifications get no response at all.
+            let is_notification = !has_id;
+            macro_rules! send_response {
+                ($resp:expr) => {{
+                    if !is_notification {
+                        let body = serde_json::to_string(&$resp)?;
+                        writer.write_all(body.as_bytes()).await?;
+                        writer.write_all(b"\n").await?;
+                        writer.flush().await?;
+                    }
+                }};
+            }
 
             let response = match method {
                 // The MCP spec uses "tools/list" for discovery.
@@ -285,9 +420,10 @@ impl McpServer {
                 }
             };
 
-            writer.write_all(response.to_string().as_bytes()).await?;
-            writer.write_all(b"\n").await?;
-            writer.flush().await?;
+            // Suppress the response for JSON-RPC notifications
+            // (requests with no `id` member). Per spec, the
+            // server MUST NOT reply to notifications.
+            send_response!(response);
         }
     }
 }
@@ -455,27 +591,42 @@ mod tests {
         assert!(result.is_ok(), "server must exit 0 on EOF, got: {result:?}");
     }
 
-    /// Regression test for security review MEDIUM #3: a line
-    /// longer than `MAX_REQUEST_LINE_BYTES` must be rejected
-    /// with a JSON-RPC -32600 error, not buffered into memory
-    /// indefinitely. We use a `duplex(64)` so the buffer cap
-    /// would be hit quickly, and write a "line" of 2 MiB without
-    /// a newline. The server should respond with a clean error
-    /// and the test should complete (no hang, no OOM).
+    /// Regression test for security review MEDIUM #3 / PR #25
+    /// Copilot HIGH-severity finding #3607982832. The old
+    /// implementation used `BufReader::read_line` and checked
+    /// `line.len() > MAX` AFTER the read — which let a 10 GB
+    /// "line" allocate 10 GB before the cap ran. The new
+    /// implementation uses `NewlineBoundedRead`, which rejects
+    /// during the read when the per-line cap is hit.
+    ///
+    /// The test writes `MAX_REQUEST_LINE_BYTES + 1024` bytes
+    /// (just over the cap) without a newline. The wrapper
+    /// rejects at the cap, the server returns -32600 and exits
+    /// (per design — a misbehaving client gets one -32600 and
+    /// the connection drops, per MCP spec the client should
+    /// close + reconnect).
     #[tokio::test]
     async fn request_line_over_max_is_rejected() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (_tmp, mut w, mut r) = fresh_server();
-        // 2 MiB of "A" without a newline — well over the 1 MiB
-        // cap. The server's `read_line` will buffer this; once
-        // it exceeds the cap, the next loop iteration returns
-        // the JSON-RPC error response.
-        let huge = "A".repeat(2 * 1024 * 1024);
-        w.write_all(huge.as_bytes()).await.unwrap();
-        w.write_all(b"\n").await.unwrap();
-        w.shutdown().await.unwrap();
+        // 1 MiB + 1 KiB of "A" without a newline — over the
+        // 1 MiB cap. The wrapper rejects the read and the
+        // server returns -32600 + closes the connection. The
+        // client write may fail with BrokenPipe after the
+        // server exits mid-write, so we spawn the write in a
+        // task and ignore its result.
+        let huge = "A".repeat(MAX_REQUEST_LINE_BYTES + 1024);
+        let writer = tokio::spawn(async move {
+            // The write may fail with BrokenPipe if the server
+            // exits before we finish — that's expected and not
+            // a test failure.
+            let _ = w.write_all(huge.as_bytes()).await;
+            let _ = w.shutdown().await;
+        });
         let mut buf = String::new();
         r.read_to_string(&mut buf).await.unwrap();
+        // Clean up the writer task regardless of its result.
+        let _ = writer.await;
         let resp: serde_json::Value = serde_json::from_str(&buf).unwrap();
         assert_eq!(
             resp["error"]["code"],
@@ -488,6 +639,100 @@ mod tests {
                 .unwrap()
                 .contains("exceeds"),
             "error message should mention size cap, got: {resp}"
+        );
+    }
+
+    /// Regression test for security review MEDIUM #3 / PR #25
+    /// Copilot HIGH-severity finding #3607982832. The old
+    /// implementation used `BufReader::read_line` and checked
+    /// `line.len() > MAX` AFTER the read — which let a 10 GB
+    /// "line" allocate 10 GB before the cap ran. The new
+    /// implementation uses `NewlineBoundedRead`, which rejects
+    /// during the read when the per-line cap is hit. The
+    /// regression test: an instrumented reader that counts
+    /// bytes read; after a "no newline for 5 MiB" write, the
+    /// wrapper must reject *before* 5 MiB are consumed by
+    /// BufReader. If the old code were in place, all 5 MiB
+    /// would be read into memory.
+    #[tokio::test]
+    async fn bounded_reader_rejects_during_read_not_after() {
+        use std::pin::Pin;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::{Context, Poll};
+        use tokio::io::{AsyncRead, ReadBuf};
+
+        /// A test-only reader that returns up to N bytes
+        /// total and counts how many were read.
+        struct CappedReader {
+            remaining: usize,
+            bytes_read: Arc<AtomicUsize>,
+            // 1 MiB buffer of 'A' bytes — enough to fill any
+            // reasonable request and trigger the wrapper's
+            // per-line cap.
+            payload: Vec<u8>,
+        }
+        impl AsyncRead for CappedReader {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                if self.remaining == 0 {
+                    return Poll::Ready(Ok(())); // EOF
+                }
+                // Cap the slice at the smaller of (a) the
+                // requested buffer size and (b) the payload
+                // size — we don't want to index past `payload`.
+                let n = std::cmp::min(
+                    std::cmp::min(buf.remaining(), self.payload.len()),
+                    self.remaining,
+                );
+                buf.put_slice(&self.payload[..n]);
+                self.remaining -= n;
+                self.bytes_read.fetch_add(n, Ordering::SeqCst);
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let bytes_read = Arc::new(AtomicUsize::new(0));
+        // 5 MiB of 'A' bytes, no newline. The wrapper should
+        // reject at MAX_REQUEST_LINE_BYTES (1 MiB) and the
+        // test's BufReader will surface the error.
+        let total = 5 * 1024 * 1024;
+        let reader = CappedReader {
+            remaining: total,
+            bytes_read: bytes_read.clone(),
+            payload: vec![b'A'; 4096],
+        };
+
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut buf_reader = BufReader::new(NewlineBoundedRead::new(reader));
+        let mut line = String::new();
+        // The wrapper's cap is MAX_REQUEST_LINE_BYTES (1 MiB);
+        // the underlying reader will supply at most that much
+        // (plus a tiny bit) before the wrapper rejects. We
+        // assert the read consumed less than the full 5 MiB.
+        let result = buf_reader.read_line(&mut line).await;
+        assert!(
+            result.is_err(),
+            "NewlineBoundedRead must reject over-cap reads with an error"
+        );
+        let consumed = bytes_read.load(Ordering::SeqCst);
+        assert!(
+            consumed <= MAX_REQUEST_LINE_BYTES + 4096,
+            "wrapper must reject before reading past the cap; \
+             consumed {consumed} bytes, cap is {MAX_REQUEST_LINE_BYTES} \
+             (the +4096 slack is one BufReader internal fill)"
+        );
+        // Specifically, we want to catch the regression where
+        // someone moves the cap check back to AFTER read_line
+        // (the OLD broken pattern). With the OLD pattern,
+        // the entire 5 MiB would be consumed before the cap
+        // is checked, and the test would fail here.
+        assert!(
+            consumed < total,
+            "wrapper must NOT consume the full {total} bytes before rejecting; \
+             consumed {consumed} — this is the HIGH-severity DoS Copilot caught"
         );
     }
 
