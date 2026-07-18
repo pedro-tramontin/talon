@@ -1,9 +1,13 @@
 //! The `Engine` is the long-lived orchestrator. One per Tauri app /
-//! per axum process. Holds the `Projects` map and the global config
-//! dir. Everything the rest of Talon needs goes through here.
+//! per axum process. Holds the `Projects` map, the global config
+//! dir, and the two event buses (the full UI bus in `events` and the
+//! narrower MCP bus in `mcp_events`). Everything the rest of Talon
+//! needs goes through here.
 
 #![allow(missing_docs)]
 
+use crate::events::{channel as events_channel, EventReceiver, EventSender};
+use crate::mcp_events::{channel as mcp_channel, McpEvent, McpEventReceiver, McpEventSender};
 use crate::projects::Projects;
 use bk_core::{ExchangeId, HttpExchange, ProjectId, Tag, TagId};
 use std::path::PathBuf;
@@ -17,11 +21,24 @@ pub struct Engine {
     /// Subdir for project files. Always `<config_dir>/projects`.
     pub projects_dir: PathBuf,
     pub(crate) projects: Projects,
+    /// Sender for the full event bus (12 variants, the Tauri UI
+    /// subscribes to this one). Cloning the sender is cheap; the
+    /// engine holds the canonical copy. Subscribers call
+    /// `subscribe_events()` to get a fresh `EventReceiver`.
+    pub(crate) event_tx: EventSender,
+    /// Sender for the MCP-narrowed event bus (5 variants, the MCP
+    /// server and the internal agent subscribe to this one). Same
+    /// shape as `event_tx`; separate so a slow MCP client doesn't
+    /// block UI updates.
+    pub(crate) mcp_event_tx: McpEventSender,
 }
 
 impl Engine {
     /// Initialize the engine at the given config dir, creating it if
     /// it doesn't exist. The projects subdir is also created.
+    /// Both event buses are initialized here; subscribers register
+    /// via `subscribe_events()` and `subscribe_mcp_events()` after
+    /// construction.
     pub fn new(config_dir: impl Into<PathBuf>) -> std::io::Result<Self> {
         let config_dir = config_dir.into();
         std::fs::create_dir_all(&config_dir)?;
@@ -31,11 +48,30 @@ impl Engine {
         // so we can keep a copy in `self.projects_dir` for the UI to
         // display in the about dialog.
         let projects_dir_for_self = projects_dir.clone();
+        let (event_tx, _event_rx) = events_channel();
+        let (mcp_event_tx, _mcp_event_rx) = mcp_channel();
         Ok(Self {
             config_dir,
             projects_dir: projects_dir_for_self,
             projects: Projects::new(projects_dir),
+            event_tx,
+            mcp_event_tx,
         })
+    }
+
+    /// Subscribe to the full event bus. Each call returns a fresh
+    /// receiver — the broadcast channel supports multiple
+    /// subscribers. The receiver is `Clone`able so a single
+    /// subscriber can fan out further if needed.
+    pub fn subscribe_events(&self) -> EventReceiver {
+        self.event_tx.subscribe()
+    }
+
+    /// Subscribe to the MCP-narrowed event bus. Same semantics as
+    /// `subscribe_events()`. The MCP server (§3.5b) and the
+    /// internal agent (§3.5c) call this.
+    pub fn subscribe_mcp_events(&self) -> McpEventReceiver {
+        self.mcp_event_tx.subscribe()
     }
 
     /// Open a project. Creates the DB file on first open, and
@@ -45,12 +81,28 @@ impl Engine {
     pub fn open_project(&self, project: &bk_core::Project) -> crate::Result<Arc<bk_store::DbPool>> {
         let pool = self.projects.open(project)?;
         bk_store::projects::upsert(&pool, &project.info)?;
+        // Emit on the full bus (UI shows the project in the dropdown).
+        // The MCP bus deliberately does NOT carry ProjectOpened — the
+        // LLM doesn't need to know which projects are open in the
+        // engine (it works on one at a time, by name). The bus
+        // surfaces event with `send`; the `let _ =` swallows the
+        // `SendError` if there are zero subscribers (which is normal
+        // during tests or before the UI attaches).
+        let _ = self
+            .event_tx
+            .send(crate::events::EngineEvent::ProjectOpened {
+                project_id: project.info.id,
+                db_filename: project.info.db_filename.clone(),
+            });
         Ok(pool)
     }
 
-    /// Close a project.
+    /// Close a project. Emits `ProjectClosed` on the full bus.
     pub fn close_project(&self, id: ProjectId) {
-        self.projects.close(id)
+        self.projects.close(id);
+        let _ = self
+            .event_tx
+            .send(crate::events::EngineEvent::ProjectClosed { project_id: id });
     }
 
     /// Insert an exchange into the given project. The project must be
@@ -65,6 +117,30 @@ impl Engine {
             .get(project_id)
             .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
         bk_store::exchanges::insert(&pool, exchange)?;
+        // Emit on the full bus (UI adds a row).
+        let summary = exchange.meta.summary.clone();
+        let id = exchange.meta.id;
+        let _ = self
+            .event_tx
+            .send(crate::events::EngineEvent::ExchangeInserted {
+                id,
+                project_id,
+                summary,
+            });
+        // Demux to the MCP bus: smaller payload (no request/response
+        // body — the LLM can call `talon_get_exchange` to fetch if
+        // needed). The `status` is `None` for blocked exchanges
+        // (response is None) and the actual status code otherwise.
+        let method = exchange.request.method.as_str().to_owned();
+        let url = exchange.request.url.as_str().to_owned();
+        let status = exchange.response.as_ref().map(|r| r.status);
+        let _ = self.mcp_event_tx.send(McpEvent::ExchangeCaptured {
+            id,
+            project_id,
+            method,
+            url,
+            status,
+        });
         Ok(())
     }
 
@@ -112,12 +188,17 @@ impl Engine {
     /// Delete an exchange by ID. Removes the FTS5 row, the
     /// `exchange_tags` join rows (CASCADE), and the exchange itself.
     /// Returns `ProjectNotOpen` if the project is not open.
+    /// Emits `ExchangeDeleted` on the full bus (UI removes the row).
     pub fn delete_exchange(&self, project_id: ProjectId, id: ExchangeId) -> crate::Result<()> {
         let pool = self
             .projects
             .get(project_id)
             .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
-        bk_store::exchanges::delete(&pool, id).map_err(Into::into)
+        bk_store::exchanges::delete(&pool, id)?;
+        let _ = self
+            .event_tx
+            .send(crate::events::EngineEvent::ExchangeDeleted { id, project_id });
+        Ok(())
     }
 
     /// Update the free-form notes on an exchange. The FTS5 row is
@@ -134,7 +215,11 @@ impl Engine {
             .projects
             .get(project_id)
             .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
-        bk_store::exchanges::update_notes(&pool, id, notes).map_err(Into::into)
+        bk_store::exchanges::update_notes(&pool, id, notes)?;
+        let _ = self
+            .event_tx
+            .send(crate::events::EngineEvent::ExchangeNotesUpdated { id, project_id });
+        Ok(())
     }
 
     /// Toggle the starred flag on an exchange. Used by the ⭐ button
@@ -149,11 +234,22 @@ impl Engine {
             .projects
             .get(project_id)
             .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
-        bk_store::exchanges::set_starred(&pool, id, starred).map_err(Into::into)
+        bk_store::exchanges::set_starred(&pool, id, starred)?;
+        let _ = self
+            .event_tx
+            .send(crate::events::EngineEvent::ExchangeStarredToggled {
+                id,
+                project_id,
+                starred,
+            });
+        Ok(())
     }
 
     /// Create a tag (or return the existing one if the name is taken
     /// within the project). Idempotent. Returns the tag's ID.
+    /// Emits `TagUpserted` on the full bus and demuxes to `TagAdded`
+    /// on the MCP bus (the LLM learns about new tags via the
+    /// narrower event).
     pub fn tag_upsert(
         &self,
         project_id: ProjectId,
@@ -163,7 +259,19 @@ impl Engine {
             .projects
             .get(project_id)
             .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
-        bk_store::tags::upsert(&pool, project_id, &new).map_err(Into::into)
+        let id = bk_store::tags::upsert(&pool, project_id, &new)?;
+        let name = new.name.clone();
+        let _ = self.event_tx.send(crate::events::EngineEvent::TagUpserted {
+            id,
+            project_id,
+            name: name.clone(),
+        });
+        let _ = self.mcp_event_tx.send(McpEvent::TagAdded {
+            id,
+            project_id,
+            name,
+        });
+        Ok(id)
     }
 
     /// List all tags for a project, alphabetical by name. Used by
@@ -219,7 +327,13 @@ impl Engine {
             .projects
             .get(project_id)
             .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
-        bk_store::tags::attach(&pool, tag_id, exchange_id).map_err(Into::into)
+        bk_store::tags::attach(&pool, tag_id, exchange_id)?;
+        let _ = self.event_tx.send(crate::events::EngineEvent::TagAttached {
+            tag_id,
+            exchange_id,
+            project_id,
+        });
+        Ok(())
     }
 
     /// Detach a tag from an exchange. No-op if not attached.
@@ -233,7 +347,13 @@ impl Engine {
             .projects
             .get(project_id)
             .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
-        bk_store::tags::detach(&pool, tag_id, exchange_id).map_err(Into::into)
+        bk_store::tags::detach(&pool, tag_id, exchange_id)?;
+        let _ = self.event_tx.send(crate::events::EngineEvent::TagDetached {
+            tag_id,
+            exchange_id,
+            project_id,
+        });
+        Ok(())
     }
 
     /// Number of currently open projects.

@@ -1,12 +1,17 @@
-//! Public engine API for Talon. The Tauri shell and the axum browser-server
-//! call into this crate.
+//! Public engine API for Talon. The Tauri shell, the axum browser-server,
+//! the MCP server (§3.5b), and the internal agent (§3.5c) all call into
+//! this crate.
 
 pub mod engine;
 pub mod error;
+pub mod events;
+pub mod mcp_events;
 pub mod projects;
 
 pub use engine::Engine;
 pub use error::{EngineError, Result};
+pub use events::{EngineEvent, EventReceiver, EventSender};
+pub use mcp_events::{McpEvent, McpEventOrder, McpEventReceiver, McpEventSender};
 pub use projects::Projects;
 
 #[cfg(test)]

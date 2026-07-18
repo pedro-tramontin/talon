@@ -57,11 +57,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          # pnpm 11.x is required because npm retired the legacy audit
+          # pnpm 11.14.0 is required because npm retired the legacy audit
           # endpoint in 2026, and pnpm only added the bulk-endpoint
-          # replacement in 11.x. pnpm 11 requires Node >= 22.13.
+          # replacement in 11.x. pnpm 11.14.0 specifically pins past the
+          # broken pnpm 11.13.0 release. pnpm 11 requires Node >= 22.13.
           # See docs/dependency-upgrade-plan.md.
-          version: 11
+          version: 11.14.0
       - uses: actions/setup-node@v4
         with:
           # Node 22 (current LTS) — required by pnpm 11.
@@ -102,11 +103,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          # pnpm 11.x is required because npm retired the legacy audit
+          # pnpm 11.14.0 is required because npm retired the legacy audit
           # endpoint in 2026, and pnpm only added the bulk-endpoint
-          # replacement in 11.x. pnpm 11 requires Node >= 22.13.
+          # replacement in 11.x. pnpm 11.14.0 specifically pins past the
+          # broken pnpm 11.13.0 release. pnpm 11 requires Node >= 22.13.
           # See docs/dependency-upgrade-plan.md.
-          version: 11
+          version: 11.14.0
       - uses: actions/setup-node@v4
         with:
           # Node 22 (current LTS) — required by pnpm 11.
