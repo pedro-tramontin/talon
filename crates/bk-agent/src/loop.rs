@@ -47,7 +47,19 @@ pub struct Agent {
 
 impl Agent {
     /// Build an agent from config and a broadcaster for progress events.
+    ///
+    /// **SEC-1 / SEC-2 enforcement:** calls `AgentConfig::validate()`
+    /// at the boundary. The validation checks `api_base` is an
+    /// http(s) URL (CWE-918 SSRF) and `api_key` is present and
+    /// non-empty (CWE-798). Any failure panics with a descriptive
+    /// message — `Agent::new` is called once at startup, and a
+    /// misconfigured agent is not recoverable. Callers that need
+    /// graceful failure can call `AgentConfig::validate()` first
+    /// and surface the error themselves.
     pub fn new(config: AgentConfig, event_tx: EventSender) -> Self {
+        if let Err(e) = config.validate() {
+            panic!("invalid AgentConfig: {e}");
+        }
         let mut openai_config = OpenAIConfig::new().with_api_base(config.api_base.clone());
         if let Some(key) = config.api_key.as_deref() {
             openai_config = openai_config.with_api_key(key.to_string());
@@ -227,7 +239,13 @@ impl Agent {
                 // now returns `Ok(ok:false)` payloads for
                 // not-allowed / unknown / bad-JSON cases, so this
                 // branch is a defense-in-depth catch for any other
-                // Err the dispatch might return.
+                // Err the dispatch might return. We MUST still push a
+                // tool-result message for this tool_call_id to
+                // preserve the OpenAI message-history invariant
+                // (every assistant tool_call message must be
+                // followed by a matching tool message) — otherwise
+                // the next chat-completion would be rejected by
+                // strict providers.
                 let result = match tools::execute(&engine, &self.config.allowed_tools, &call) {
                     Ok(v) => v,
                     Err(e) => {
@@ -235,6 +253,26 @@ impl Agent {
                             agent_id: agent_id.clone(),
                             error: format!("tool {} failed: {e}", call.name),
                         });
+                        let err_payload = format!(
+                            "{{\"ok\":false,\"error\":\"tool {} failed: {}\"}}",
+                            call.name, e
+                        );
+                        let capped = if err_payload.len() > MAX_TOOL_RESULT_BYTES {
+                            let mut s = err_payload;
+                            s.truncate(MAX_TOOL_RESULT_BYTES);
+                            s.push_str("\n[truncated: tool error exceeded 64 KiB cap]");
+                            s
+                        } else {
+                            err_payload
+                        };
+                        messages.push(ChatCompletionRequestMessage::Tool(
+                            ChatCompletionRequestToolMessage {
+                                content: async_openai::types::chat::ChatCompletionRequestToolMessageContent::Text(
+                                    capped,
+                                ),
+                                tool_call_id: tool_call_id.clone(),
+                            },
+                        ));
                         continue;
                     }
                 };
@@ -296,6 +334,39 @@ mod tests {
         let agent = Agent::new(config.clone(), tx);
         assert_eq!(agent.config.api_base, "http://localhost:1/v1");
         assert_eq!(agent.config.model, "model");
+    }
+
+    /// SEC-1 / SEC-2 enforcement regression guard. `Agent::new`
+    /// MUST validate the config at the boundary. A config with
+    /// `api_base = "file://..."` (SSRF) or `api_key = None` (default
+    /// since 0fb948d) must panic with a descriptive message rather
+    /// than letting the misconfigured value reach the OpenAI client.
+    #[test]
+    #[should_panic(expected = "invalid AgentConfig")]
+    fn agent_new_panics_on_non_http_scheme() {
+        let (tx, _rx) = crate::events::agent_channel();
+        let config = AgentConfig {
+            api_base: "file:///etc/passwd".into(),
+            api_key: Some("test".into()),
+            model: "m".into(),
+            max_iterations: 5,
+            allowed_tools: vec![],
+        };
+        let _ = Agent::new(config, tx);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid AgentConfig")]
+    fn agent_new_panics_on_missing_api_key() {
+        let (tx, _rx) = crate::events::agent_channel();
+        let config = AgentConfig {
+            api_base: "http://localhost:11434/v1".into(),
+            api_key: None,
+            model: "m".into(),
+            max_iterations: 5,
+            allowed_tools: vec![],
+        };
+        let _ = Agent::new(config, tx);
     }
 
     #[test]
