@@ -356,12 +356,10 @@ name = "bk-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "bk-core",
  "bk-engine",
  "bk-store",
  "chrono",
- "clap",
  "rmcp",
  "serde",
  "serde_json",
@@ -369,7 +367,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

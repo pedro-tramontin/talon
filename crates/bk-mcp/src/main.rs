@@ -5,13 +5,20 @@
 //! ## Usage
 //!
 //! ```sh
-//! bk-mcp --config-dir ~/.config/talon
+//! TALON_CONFIG_DIR=~/.config/talon bk-mcp
 //! ```
 //!
-//! `--config-dir` is the directory the `bk-engine::Engine`
+//! `TALON_CONFIG_DIR` is the directory the `bk-engine::Engine`
 //! reads/writes projects to. One DB file per project, named
 //! `<project-slug>-<YYYY-MM-DD>.db` per the engine's filename
-//! convention.
+//! convention. The env var is the single source of truth for
+//! the config dir; no CLI flags (the binary is a stdio server,
+//! not a CLI tool).
+//!
+//! Logging is intentionally minimal: server-side errors are
+//! written to stderr via `eprintln!` so the MCP client (which
+//! reads from stdin) is not interfered with. This keeps the
+//! binary's dep set small.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,43 +26,23 @@ use std::sync::Arc;
 use anyhow::Context;
 use bk_engine::Engine;
 use bk_mcp::McpServer;
-use clap::Parser;
-
-#[derive(Debug, Parser)]
-#[command(
-    name = "bk-mcp",
-    version,
-    about = "Talon MCP server (stdio JSON-RPC 2.0). Speaks the Model Context Protocol to AI agents like Claude Desktop."
-)]
-struct Args {
-    /// Directory the engine reads/writes projects to. One
-    /// `<project-slug>-<date>.db` file per opened project.
-    #[arg(long, env = "TALON_CONFIG_DIR", default_value = "~/.config/talon")]
-    config_dir: PathBuf,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing for the server-side error log
-    // (sanitized McpError::Engine messages are written here).
-    // The MCP client never sees this output — it goes to stderr.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
-    let args = Args::parse();
+    let config_dir = std::env::var_os("TALON_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("~/.config/talon"));
 
     // Expand a leading `~` to the user's home directory. The
     // config dir is a trust boundary (the engine writes DB
     // files there) so we resolve it once at startup.
-    let config_dir = args.config_dir;
     let config_dir = if config_dir.starts_with("~") {
         if let Some(home) = std::env::var_os("HOME") {
-            PathBuf::from(home).join(config_dir.strip_prefix("~").unwrap())
+            PathBuf::from(home).join(
+                config_dir
+                    .strip_prefix("~")
+                    .expect("starts_with('~') implies a prefix to strip"),
+            )
         } else {
             config_dir
         }
@@ -65,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&config_dir)
         .with_context(|| format!("creating config dir {}", config_dir.display()))?;
 
-    tracing::info!(config_dir = %config_dir.display(), "bk-mcp starting");
+    eprintln!("bk-mcp starting (config_dir = {})", config_dir.display());
 
     let engine = Arc::new(
         Engine::new(&config_dir)
