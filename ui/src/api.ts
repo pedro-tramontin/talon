@@ -193,6 +193,26 @@ export async function getExchange(
   });
 }
 
+/**
+ * `update_notes(project_id, id, notes) -> ()`. Persists
+ * the per-exchange notes string. The Rust side enforces
+ * a 64KB cap; over-cap input is rejected with a
+ * user-readable error string. v1 fires this on the
+ * NotesPanel's `onBlur`; the panel also exposes a
+ * manual "Save" button for the keyboard-driven case.
+ */
+export async function updateNotes(
+  project_id: DomainProjectId,
+  id: DomainExchangeId,
+  notes: string,
+): Promise<void> {
+  await invoke<void>("update_notes", {
+    projectId: project_id,
+    id,
+    notes,
+  });
+}
+
 /** `proxy_status() -> ProxyStatus`. */
 export async function proxyStatus(): Promise<ProxyStatus> {
   return await invoke<ProxyStatus>("proxy_status");

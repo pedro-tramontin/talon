@@ -133,6 +133,7 @@ pub fn run() {
             commands::proxy_status,
             commands::start_proxy,
             commands::stop_proxy,
+            commands::update_notes,
             agent::agent_start,
             agent::agent_confirm_write,
             agent::agent_cancel,
