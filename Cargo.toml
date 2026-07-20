@@ -32,6 +32,7 @@ bk-store = { path = "crates/bk-store" }
 bk-engine = { path = "crates/bk-engine" }
 bk-mcp = { path = "crates/bk-mcp" }
 bk-events = { path = "crates/bk-events" }
+bk-proxy = { path = "crates/bk-proxy" }
 
 # Async runtime
 # `full` covers all the runtime bits we use in production; `test-util`

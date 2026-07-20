@@ -26,13 +26,20 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 bk-core = { workspace = true }
 bk-events = { workspace = true }
+bk-engine = { workspace = true }
+bk-proxy = { workspace = true }
 bk-agent = { path = "../crates/bk-agent" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+dirs = "6.0"
+tempfile = "3.10"
 
 [dev-dependencies]
+bk-store = { workspace = true }
 # `test-util` is included in the workspace `tokio` `full` feature set,
 # so a bare `workspace = true` re-export is enough.
 
