@@ -42,7 +42,7 @@ describe("Capture route", () => {
   it("renders the 3 columns with the expected widths", () => {
     render(<Capture />);
     const left = screen.getByTestId("capture-left-rail");
-    const main = screen.getByTestId("capture-main");
+    const main = screen.getByTestId("exchange-detail-empty");
     const right = screen.getByTestId("capture-right-rail");
 
     // The width is set as an inline `style` so it survives
@@ -57,16 +57,18 @@ describe("Capture route", () => {
     );
     // The main column is `flex-1` (no fixed width). It
     // should be present and a `<main>` element so screen
-    // readers find it.
+    // readers find it. §4.6 wires `<ExchangeDetail />`
+    // here, which renders an empty-state `<main>` when no
+    // row is selected — that's the testid we assert.
     expect(main.tagName.toLowerCase()).toBe("main");
   });
 
   it("renders the empty state in the main column", () => {
     render(<Capture />);
-    expect(screen.getByTestId("capture-main-empty")).toBeInTheDocument();
+    expect(screen.getByTestId("exchange-detail-empty")).toBeInTheDocument();
     expect(
-      screen.getByTestId("capture-main-empty").textContent,
-    ).toMatch(/Select an exchange to view details/);
+      screen.getByTestId("exchange-detail-empty").textContent,
+    ).toMatch(/Select an exchange to view its request and response/);
   });
 
   it("renders the virtualized exchange list in the left rail (lands in §4.5)", () => {
