@@ -4,7 +4,7 @@ import { App } from "./App";
 
 // Mock the Tauri IPC + event bridge. The App (and the agent store
 // it pulls in) call `invoke` for commands and `listen` for the
-// `agent_event` channel. We stub both here so the test doesn't
+// `wire_event` channel. We stub both here so the test doesn't
 // require a running Tauri runtime.
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => {
@@ -17,9 +17,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => {
-    // Return a no-op unlisten; the agent store subscribes to
-    // `agent_event` on init and never gets one in the test, which
-    // is the right behavior for a "no active run" smoke test.
+    // Return a no-op unlisten; the wire-bus subscribes to
+    // `wire_event` on connect and never gets one in the test,
+    // which is the right behavior for a "no events" smoke test.
     return () => undefined;
   }),
 }));
@@ -29,11 +29,18 @@ describe("App", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the title and the greeting from Rust", async () => {
+  it("renders the Capture route and the greeting from Rust", async () => {
     render(<App />);
-    expect(screen.getByText("Talon")).toBeInTheDocument();
+    // §4.3-4.4: the App renders the <Capture /> route directly
+    // (no router in v0.1). The top bar's project dropdown is
+    // the visible surface.
+    expect(screen.getByTestId("capture-top-bar")).toBeInTheDocument();
+    // The §3.5d greeting is preserved in a hidden testid so
+    // the "IPC bridge alive" smoke check still works.
     await waitFor(() =>
-      expect(screen.getByText(/Hello from Talon/)).toBeInTheDocument()
+      expect(screen.getByTestId("app-greeting").textContent).toMatch(
+        /Hello from Talon/,
+      ),
     );
   });
 });

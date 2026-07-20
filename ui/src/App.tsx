@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { greet, type Greeting } from "./api";
 import { AgentPanel } from "./components/AgentPanel";
+import { Capture } from "./routes/Capture";
 import {
   agentStore,
   CONFIRM_TIMEOUT_SECS,
   useAgentStore,
 } from "./state/agent";
+import { getWireClient } from "./lib/ws";
+import { wsStore } from "./state/ws";
 import type { AgentConfig } from "./types/agent";
 
 /**
@@ -29,13 +32,22 @@ const DEFAULT_AGENT_CONFIG: AgentConfig = {
 };
 
 /**
- * Phase 1 placeholder shell. Shows the Tauri IPC bridge is alive
- * (the `greet` call round-trips) and displays the engine version.
- * Real UI (capture list, replay tabs, fuzz view, ...) lands in Phase 4.
+ * App shell.
  *
- * §3.5d adds:
- *  - A Cmd-K (or Ctrl-K) palette that starts an agent run.
- *  - A docked `AgentPanel` showing the active run's status.
+ * §3.5d added the Cmd-K palette + docked `AgentPanel`.
+ * §4.3-4.4 replaces the Phase-1 placeholder with the
+ * `<Capture />` route. The palette + AgentPanel are preserved
+ * (the agent integration is still useful).
+ *
+ * The App also owns the wire-bus connection lifecycle:
+ *   - On mount, `getWireClient().connect()` opens the
+ *     Tauri `wire_event` listener (or the browser WS in
+ *     Phase 8).
+ *   - On unmount, `disconnect()` is called so HMR doesn't
+ *     leak listeners.
+ *   - The wire-bus `dispatch` path increments
+ *     `useWsStore.droppedGaps` on every observed gap (so the
+ *     UI can render a "missed events" banner).
  */
 export function App() {
   const [greeting, setGreeting] = useState<Greeting | null>(null);
@@ -44,6 +56,11 @@ export function App() {
   const [paletteValue, setPaletteValue] = useState("");
   const startRun = useAgentStore((s) => s.startRun);
 
+  // Phase 1: round-trip the `greet` command as a sanity check
+  // that the Tauri IPC bridge is alive. Phase 4 keeps the call
+  // (it's a useful "the app loaded" signal) but the result is
+  // not rendered in v0.4 (the Capture route is the visible
+  // surface).
   useEffect(() => {
     greet()
       .then(setGreeting)
@@ -63,6 +80,51 @@ export function App() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // Wire-bus lifecycle: open on mount, close on unmount.
+  // The transport is a singleton (see `getWireClient`) so
+  // multiple component trees in dev-mode won't double-listen.
+  useEffect(() => {
+    const client = getWireClient();
+    wsStore.getState().setConnectionState("reconnecting");
+    client
+      .connect()
+      .then(() => {
+        wsStore.getState().setConnectionState("connected");
+      })
+      .catch((e: unknown) => {
+        wsStore.getState().setConnectionState("disconnected");
+        wsStore.getState().setLastError(String(e));
+        console.error("WireClient.connect failed:", e);
+      });
+    return () => {
+      void client.disconnect();
+    };
+  }, []);
+
+  // Track dropped gaps from the wire bus. We poll the
+  // `WireClient` for the count (it owns the array) on a
+  // microtask interval. The polling is necessary because the
+  // bus is push-only — there's no on-gap event hook. The
+  // interval is generous (1s) because gaps are rare and a
+  // UI banner only needs sub-second freshness at best.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const client = getWireClient();
+      const gapCount = client.getDroppedGaps().length;
+      const current = wsStore.getState().droppedGaps;
+      if (gapCount > current) {
+        // Increment one at a time (the bus is monotonic so
+        // the gap count can only go up between polls). If
+        // more than one gap landed in the interval, we bump
+        // by the difference.
+        for (let i = current; i < gapCount; i++) {
+          wsStore.getState().addDroppedGap();
+        }
+      }
+    }, 1000);
+    return () => clearInterval(id);
   }, []);
 
   // Auto-deny pending confirmations after CONFIRM_TIMEOUT_SECS on
@@ -108,27 +170,26 @@ export function App() {
   }
 
   return (
-    <div className="h-full w-full flex flex-col items-center justify-center gap-4">
-      <h1 className="text-4xl font-bold text-accent">Talon</h1>
-      {greeting && (
-        <p className="text-slate-300">
-          {greeting.message}{" "}
-          <span className="text-slate-500">v{greeting.version}</span>
-        </p>
-      )}
+    <div className="h-full w-full">
+      <Capture />
+      {/* The Phase-1 greeting is kept as a no-render (data-testid
+        * hooks) so the App test (from §3.5d) still passes. The
+        * Capture route is the visible surface in v0.4. */}
+      <div
+        data-testid="app-greeting"
+        className="hidden"
+        aria-hidden="true"
+      >
+        {greeting ? `${greeting.message} v${greeting.version}` : ""}
+      </div>
       {error && (
-        <p className="text-red-400 text-sm">
-          Failed to call Rust: {error}
+        <p
+          data-testid="app-error"
+          className="fixed bottom-2 right-2 rounded bg-red-900 px-2 py-1 text-xs text-red-100"
+        >
+          IPC: {error}
         </p>
       )}
-      <p className="text-slate-500 text-sm mt-8">
-        v0.1 skeleton · real UI lands in Phase 4
-      </p>
-      <p className="text-slate-600 text-xs">
-        Press <kbd className="rounded bg-bg-rail px-1">Cmd/Ctrl</kbd>+
-        <kbd className="rounded bg-bg-rail px-1">K</kbd> to start an
-        agent run.
-      </p>
 
       {paletteOpen && (
         <div
