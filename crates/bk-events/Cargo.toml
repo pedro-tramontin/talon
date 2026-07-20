@@ -1,0 +1,28 @@
+[package]
+name = "bk-events"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Phase 8 wire-format event envelope (WireEvent) and tokio broadcast fan-in helper. Used by the Tauri app and the React UI to converge on a single tagged envelope across the engine / agent / proxy event sources."
+
+[dependencies]
+bk-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+# `tokio-util` is needed for `CancellationToken` (the §4.0
+# fan-in contract: a `CancellationToken` cancels all three
+# forwarder tasks). The workspace dep includes the `rt`
+# feature, which is sufficient.
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# `tracing-subscriber` with `env-filter` lets tests assert on logged
+# warnings (the `Lagged` log line in `fan_in` is asserted in the
+# lag-recovery test). The `fmt` subscriber is already in the
+# workspace dep set; we pull the matching version here.
+tracing-subscriber = { workspace = true }

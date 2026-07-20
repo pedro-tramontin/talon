@@ -19,6 +19,7 @@
 //! changes to `bk-agent` or the React side.
 
 use bk_agent::{agent_channel, AgentConfig, AgentEvent, EventReceiver};
+use bk_events::WireEventKind;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +28,8 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::oneshot;
 use uuid::Uuid;
+
+use crate::wire::{emit_wire_event, make_wire_event, WireEventSeq};
 
 /// How long a pending write-tool confirmation waits for a user
 /// response before it auto-denies. Matches the React-side constant in
@@ -309,6 +312,24 @@ pub async fn agent_cancel(
             error: "cancelled by user".to_string(),
         },
     );
+    // §4.0 additive `wire_event` emit alongside the typed
+    // `agent_event` above. The wire envelope lets the
+    // Phase 8 `WireClient` observe all three event sources
+    // through a single tagged channel. The typed emit
+    // above is the load-bearing one for v1 consumers (the
+    // React agent store, the proxy listener, the engine
+    // listener) — this additive emit is for the new wire
+    // clients only.
+    let wire = make_wire_event(
+        &app.state::<WireEventSeq>().inner().clone(),
+        WireEventKind::AgentEvent,
+        serde_json::to_value(&AgentEvent::AgentError {
+            agent_id: run_id.clone(),
+            error: "cancelled by user".to_string(),
+        })
+        .unwrap_or(serde_json::Value::Null),
+    );
+    emit_wire_event(&app, WEBVIEW_LABEL, &wire);
     Ok(())
 }
 
@@ -343,6 +364,16 @@ async fn run_forwarder(
                 if let Err(e) = app.emit_to(WEBVIEW_LABEL, AGENT_EVENT_LABEL, &event) {
                     tracing::error!(run_id = %run_id, error = %e, "emit agent_event failed");
                 }
+                // §4.0 additive `wire_event` emit alongside
+                // the typed `agent_event` above. The wire
+                // envelope is the Phase 8 contract; the typed
+                // emit is the v1 contract. The wire emit is
+                // best-effort: failure to emit the wire event
+                // is logged but does not stop the run.
+                let wire_seq = app.state::<WireEventSeq>().inner().clone();
+                let event_json = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
+                let wire = make_wire_event(&wire_seq, WireEventKind::AgentEvent, event_json);
+                emit_wire_event(&app, WEBVIEW_LABEL, &wire);
 
                 // If this event is a tool call to a write tool, drive
                 // the confirmation flow. The receiver waits up to
@@ -449,6 +480,20 @@ async fn drive_confirmation(
     if let Err(e) = app.emit_to(WEBVIEW_LABEL, CONFIRM_REQUEST_LABEL, &request) {
         tracing::error!(error = %e, "emit confirm request failed");
     }
+    // §4.0 additive `wire_event` emit. The wire envelope
+    // carries a payload of `{"kind": "agent_event", "payload":
+    // {...}, "seq": N}`. The kind here is `agent_event` because
+    // the underlying event is an agent event (a confirmation
+    // request is part of the agent flow). This is a forward
+    // signal: the WireClient sees the confirm request as an
+    // `agent_event` whose payload is the `ConfirmRequestPayload`.
+    let wire_seq = app.state::<WireEventSeq>().inner().clone();
+    let wire = make_wire_event(
+        &wire_seq,
+        WireEventKind::AgentEvent,
+        serde_json::to_value(&request).unwrap_or(serde_json::Value::Null),
+    );
+    emit_wire_event(&app, WEBVIEW_LABEL, &wire);
 
     // Wait up to CONFIRM_TIMEOUT_SECS for a user response. If the
     // user doesn't respond, send a Timeout to the LLM and emit a
@@ -479,6 +524,17 @@ async fn drive_confirmation(
     if let Err(e) = app.emit_to(WEBVIEW_LABEL, CONFIRM_RESPONSE_LABEL, &payload) {
         tracing::error!(error = %e, "emit confirm response failed");
     }
+    // §4.0 additive `wire_event` emit for the confirm
+    // response. Same shape as the request: `kind:
+    // agent_event`, payload is the `ConfirmResponsePayload`,
+    // seq is fresh.
+    let wire_seq = app.state::<WireEventSeq>().inner().clone();
+    let wire = make_wire_event(
+        &wire_seq,
+        WireEventKind::AgentEvent,
+        serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null),
+    );
+    emit_wire_event(&app, WEBVIEW_LABEL, &wire);
     tracing::info!(
         run_id = %run_id,
         tool = %tool_name,

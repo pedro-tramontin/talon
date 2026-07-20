@@ -11,6 +11,7 @@
 )]
 
 mod agent;
+mod wire;
 
 use serde::Serialize;
 
@@ -50,6 +51,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(agent::AgentState::new())
+        .manage(wire::WireEventSeq::new())
         .setup(|app| {
             // On startup, log the engine version so users (and our xvfb
             // smoke tests) can verify the IPC bridge is alive even before
