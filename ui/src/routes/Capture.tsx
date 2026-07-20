@@ -3,10 +3,11 @@
 //     `useProjectStore`.
 //   - Left rail (w-60 / 240px): the §4.5 virtualized
 //     exchange list (`<ExchangeList />`).
-//   - Main (flex-1): empty state until §4.5+ wires the
-//     detail view.
+//   - Main (flex-1): the §4.6 `<ExchangeDetail />` panel
+//     (renders the request + response inspector; empty
+//     state when no row is selected).
 //   - Right rail (w-80 / 320px): 3 placeholder tabs
-//     (Inspector / Decoder / Notes) that §4.6+ fills in.
+//     (Inspector / Decoder / Notes) that §4.7 fills in.
 //
 // No router in v0.1: the `App` component renders `<Capture />`
 // directly. `react-router` lands in a later phase when we
@@ -15,6 +16,7 @@
 // the same Tauri window for now).
 
 import { useProjectStore } from "../state/project";
+import { ExchangeDetail } from "../components/ExchangeDetail";
 import { ExchangeList } from "../components/ExchangeList";
 
 /** Width of the left rail in px. Pinned at 240 to match the
@@ -91,25 +93,14 @@ function ExchangeLeftRail() {
 }
 
 /**
- * Main-panel empty state. §4.5 fills the top of main with
- * the virtualized list; §4.6 fills the detail view below.
+ * Main column. Renders the §4.6 `<ExchangeDetail />` panel
+ * (which shows the empty state when no row is selected).
+ * The list and the detail share the same store signal:
+ * clicking a row in `<ExchangeList />` sets `selectedId`,
+ * and the detail reads it.
  */
-function MainEmpty() {
-  return (
-    <main
-      data-testid="capture-main"
-      className="h-full flex-1 bg-bg-base"
-    >
-      <div className="flex h-full items-center justify-center">
-        <p
-          data-testid="capture-main-empty"
-          className="text-sm text-slate-500"
-        >
-          Select an exchange to view details (lands in §4.5+).
-        </p>
-      </div>
-    </main>
-  );
+function CaptureMain() {
+  return <ExchangeDetail />;
 }
 
 /**
@@ -163,7 +154,7 @@ export function Capture() {
       </header>
       <div className="flex flex-1 overflow-hidden">
         <ExchangeLeftRail />
-        <MainEmpty />
+        <CaptureMain />
         <RightRailPlaceholder />
       </div>
     </div>

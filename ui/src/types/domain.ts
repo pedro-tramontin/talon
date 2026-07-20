@@ -77,12 +77,61 @@ export interface ExchangeListPage {
 }
 
 /**
- * Full exchange detail returned by `get_exchange`, mirror of
- * `app::commands::ExchangeDetail`. §4.6 wires the detail view
- * to this shape; for now the Capture route shows the empty
- * state and the right-rail tabs.
+ * Request body shape, mirror of `bk_core::Body` (see
+ * `crates/bk-core/src/model.rs`). The `kind` tag discriminates
+ * the variant:
+ *   - `complete`: the body is fully buffered; `data` is the
+ *     raw bytes (serialized as a JSON array of byte values,
+ *     e.g. `[104, 101, 108, 108, 111]` for "hello"). To decode
+ *     to a UTF-8 string, use `new TextDecoder().decode(new
+ *     Uint8Array(data))`. **Do NOT** call `atob(data)` — that
+ *     would treat the array as a base64 string and fail.
+ *   - `streaming`: the body is on the wire; only the
+ *     `content_length` is known.
+ *   - `empty`: no body (e.g., a GET with no payload).
  */
-export interface ExchangeDetail {
+export type ExchangeBody =
+  | { readonly kind: "complete"; readonly data: readonly number[] }
+  | { readonly kind: "streaming"; readonly content_length: number | null }
+  | { readonly kind: "empty" };
+
+/**
+ * Request portion of an `ExchangeDetail`, mirror of
+ * `bk_core::Request`. `method` is the HTTP method string
+ * (e.g. `"GET"`); `url` is the full request URL; `version`
+ * is the protocol version (e.g. `"HTTP/1.1"`); `headers`
+ * is the header map (lowercased keys, single-string values
+ * per the §4.6 Rust serde shape).
+ */
+export interface ExchangeRequest {
+  readonly method: string;
+  readonly url: string;
+  readonly version: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body: ExchangeBody;
+}
+
+/**
+ * Response portion of an `ExchangeDetail`, mirror of
+ * `bk_core::Response`. The `status` is a 3-digit HTTP code
+ * (or `null` for an in-flight request — the wrapper sees
+ * `ExchangeDetail.response` as nullable in that case).
+ */
+export interface ExchangeResponse {
+  readonly version: string;
+  readonly status: number;
+  readonly status_text: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body: ExchangeBody;
+}
+
+/**
+ * Metadata block of an `ExchangeDetail`, mirror of
+ * `bk_core::ExchangeMeta`. The `id` and `project_id` are
+ * the same UUIDs the list view sees (so a click in the list
+ * can correlate to a detail row).
+ */
+export interface ExchangeDetailMeta {
   readonly id: ExchangeId;
   readonly project_id: ProjectId;
   /** ISO-8601 UTC timestamp. */
@@ -90,13 +139,26 @@ export interface ExchangeDetail {
   readonly duration_ns: number;
   readonly summary: string;
   readonly scope_state: ScopeState;
-  readonly starred: boolean;
   readonly notes: string;
-  /** Method + URL of the original request. */
-  readonly method: string;
-  readonly url: string;
-  /** Response status code (or `null` for an in-flight request). */
-  readonly status: number | null;
+  readonly starred: boolean;
+}
+
+/**
+ * Full exchange detail returned by `get_exchange`, mirror of
+ * `app::commands::ExchangeDetail = bk_core::HttpExchange`
+ * (see `app/src/commands.rs` and
+ * `crates/bk-core/src/model.rs`). The Rust side serializes
+ * the whole `HttpExchange` — request + response bodies
+ * included — so the UI does not need a second round-trip to
+ * render the inspector. `response` is `null` for an
+ * in-flight request or a blocked one (the
+ * `blocked_reason` field explains why).
+ */
+export interface ExchangeDetail {
+  readonly meta: ExchangeDetailMeta;
+  readonly request: ExchangeRequest;
+  readonly response: ExchangeResponse | null;
+  readonly blocked_reason: string | null;
 }
 
 /**
