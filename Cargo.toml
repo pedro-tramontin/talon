@@ -12,6 +12,7 @@ members = [
     "crates/bk-engine",
     "crates/bk-proxy",
     "crates/bk-mcp",
+    "crates/bk-agent",
     "app",
 ]
 
@@ -28,6 +29,7 @@ authors = ["Pedro Tramontin"]
 bk-core = { path = "crates/bk-core" }
 bk-store = { path = "crates/bk-store" }
 bk-engine = { path = "crates/bk-engine" }
+bk-mcp = { path = "crates/bk-mcp" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
