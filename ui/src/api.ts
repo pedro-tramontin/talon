@@ -18,6 +18,20 @@ export type {
   ConfirmResponsePayload,
 } from "./types/agent";
 
+// Re-export the §4.x DTO types from `./types/domain` (ProjectMeta,
+// ExchangeSummary, ProxyStatus, ...). Components import these
+// through `../api` to keep a single import surface.
+export type {
+  ProjectMeta,
+  ExchangeSummary,
+  ExchangeListPage,
+  ExchangeDetail,
+  SocketAddr,
+  ProxyStatus,
+  ScopeState,
+  ProxyState,
+} from "./types/domain";
+
 export interface Greeting {
   message: string;
   version: string;
@@ -117,4 +131,79 @@ export function onConfirmResponse(
       handler(e.payload);
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// §4.1 Tauri command wrappers
+//
+// These mirror the `#[tauri::command]` functions in `app/src/commands.rs`.
+// The Rust side returns `Result<T, String>`; we surface the `Err` as a
+// thrown `Error` so React code can `await ... .catch(err => ...)` the
+// standard way. The OK path is unwrapped to `T` (Tauri's `invoke<T>`
+// already does the JSON decode + error-string check).
+
+import type {
+  ExchangeId as DomainExchangeId,
+  ProjectId as DomainProjectId,
+} from "./types/ids";
+import type {
+  ExchangeDetail,
+  ExchangeListPage,
+  ProjectMeta,
+  ProxyStatus,
+} from "./types/domain";
+
+/** `open_project(name, target_host) -> ProjectMeta`. */
+export async function openProject(
+  name: string,
+  target_host: string,
+): Promise<ProjectMeta> {
+  return await invoke<ProjectMeta>("open_project", {
+    name,
+    targetHost: target_host,
+  });
+}
+
+/** `close_project(id) -> ()`. */
+export async function closeProject(id: DomainProjectId): Promise<void> {
+  await invoke<void>("close_project", { id });
+}
+
+/** `list_exchanges(project_id, cursor?, limit?) -> ExchangeListPage`. */
+export async function listExchanges(
+  project_id: DomainProjectId,
+  cursor: number | null = null,
+  limit: number | null = null,
+): Promise<ExchangeListPage> {
+  return await invoke<ExchangeListPage>("list_exchanges", {
+    projectId: project_id,
+    cursor,
+    limit,
+  });
+}
+
+/** `get_exchange(project_id, id) -> Option<ExchangeDetail>`. */
+export async function getExchange(
+  project_id: DomainProjectId,
+  id: DomainExchangeId,
+): Promise<ExchangeDetail | null> {
+  return await invoke<ExchangeDetail | null>("get_exchange", {
+    projectId: project_id,
+    id,
+  });
+}
+
+/** `proxy_status() -> ProxyStatus`. */
+export async function proxyStatus(): Promise<ProxyStatus> {
+  return await invoke<ProxyStatus>("proxy_status");
+}
+
+/** `start_proxy() -> ()`. Idempotent on the Rust side. */
+export async function startProxy(): Promise<void> {
+  await invoke<void>("start_proxy");
+}
+
+/** `stop_proxy() -> ()`. */
+export async function stopProxy(): Promise<void> {
+  await invoke<void>("stop_proxy");
 }

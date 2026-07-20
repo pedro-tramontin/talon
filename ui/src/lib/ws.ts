@@ -227,3 +227,39 @@ export class WireClient {
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Singleton accessor
+//
+// The `WireClient` is a single app-wide instance. It's lazy-initialized
+// on the first call to `getWireClient()` so the constructor doesn't run
+// at module-import time (Pitfall #37: no top-level `let` capturing
+// handlers). Tests can call `setWireClient(new WireClient(...))` to
+// swap in a mock before any `getWireClient()` call resolves.
+
+let _wireClient: WireClient | null = null;
+
+/**
+ * Get the singleton `WireClient`. Lazily constructs a default
+ * instance on first call. `connect()` is NOT called here — the
+ * `App.tsx` mount effect is responsible for that (so the
+ * connection only opens once, in the React tree).
+ */
+export function getWireClient(): WireClient {
+  if (_wireClient === null) {
+    _wireClient = new WireClient();
+  }
+  return _wireClient;
+}
+
+/**
+ * Replace the singleton with a caller-provided instance. Tests
+ * use this to inject a mock before any `getWireClient()` call
+ * lands. Returns the previous instance so the caller can
+ * restore state if needed.
+ */
+export function setWireClient(client: WireClient | null): WireClient | null {
+  const prev = _wireClient;
+  _wireClient = client;
+  return prev;
+}
