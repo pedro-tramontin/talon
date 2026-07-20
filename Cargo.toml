@@ -13,6 +13,7 @@ members = [
     "crates/bk-proxy",
     "crates/bk-mcp",
     "crates/bk-agent",
+    "crates/bk-events",
     "app",
 ]
 
@@ -30,6 +31,7 @@ bk-core = { path = "crates/bk-core" }
 bk-store = { path = "crates/bk-store" }
 bk-engine = { path = "crates/bk-engine" }
 bk-mcp = { path = "crates/bk-mcp" }
+bk-events = { path = "crates/bk-events" }
 
 # Async runtime
 # `full` covers all the runtime bits we use in production; `test-util`
@@ -38,7 +40,6 @@ bk-mcp = { path = "crates/bk-mcp" }
 tokio = { version = "1.40", features = ["full", "test-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
-
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
 

@@ -25,6 +25,7 @@ tauri = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 bk-core = { workspace = true }
+bk-events = { workspace = true }
 bk-agent = { path = "../crates/bk-agent" }
 tokio = { workspace = true }
 tracing = { workspace = true }
