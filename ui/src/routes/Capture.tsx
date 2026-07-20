@@ -18,6 +18,7 @@
 import { useProjectStore } from "../state/project";
 import { ExchangeDetail } from "../components/ExchangeDetail";
 import { ExchangeList } from "../components/ExchangeList";
+import { RightRail } from "../components/RightRail";
 
 /** Width of the left rail in px. Pinned at 240 to match the
  * Tailwind `w-60` class. The Capture.test.tsx test asserts
@@ -104,38 +105,24 @@ function CaptureMain() {
 }
 
 /**
- * Right-rail placeholder. Three tabs (Inspector / Decoder /
- * Notes) that just render their name. §4.6 fills these in
- * with the actual exchange-detail panes.
+ * Right-rail tab strip + body. The §4.7 PR owns the 4 tabs
+ * (Inspector / Decoder / Diff / Notes); the Capture route
+ * just wraps it with the width constraint. The
+ * `data-testid="capture-right-rail"` and the inline width
+ * style live on the outer wrapper (this `<div>`) so the
+ * Capture.test.tsx layout assertion can find them in one
+ * place — the underlying `<RightRail />` is the
+ * styled-and-tab-stripped inner element.
  */
-function RightRailPlaceholder() {
+function CaptureRightRail() {
   return (
-    <aside
+    <div
       data-testid="capture-right-rail"
-      className="h-full border-l border-slate-800 bg-bg-rail"
+      className="h-full"
       style={{ width: `${RIGHT_RAIL_PX}px` }}
     >
-      <div className="flex border-b border-slate-800">
-        <span
-          data-testid="capture-right-rail-tab-inspector"
-          className="px-3 py-2 text-xs text-slate-300 border-r border-slate-800"
-        >
-          Inspector
-        </span>
-        <span
-          data-testid="capture-right-rail-tab-decoder"
-          className="px-3 py-2 text-xs text-slate-300 border-r border-slate-800"
-        >
-          Decoder
-        </span>
-        <span
-          data-testid="capture-right-rail-tab-notes"
-          className="px-3 py-2 text-xs text-slate-300"
-        >
-          Notes
-        </span>
-      </div>
-    </aside>
+      <RightRail />
+    </div>
   );
 }
 
@@ -155,7 +142,7 @@ export function Capture() {
       <div className="flex flex-1 overflow-hidden">
         <ExchangeLeftRail />
         <CaptureMain />
-        <RightRailPlaceholder />
+        <CaptureRightRail />
       </div>
     </div>
   );
