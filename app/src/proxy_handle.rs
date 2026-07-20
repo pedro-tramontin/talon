@@ -23,7 +23,7 @@ use std::sync::Arc;
 use bk_proxy::{Proxy, ProxyConfig, ProxyEvent};
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::Mutex;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tracing::{info, warn};
 
 /// Tauri-friendly handle. `Arc`'d so the command layer can hold
@@ -75,6 +75,10 @@ struct Inner {
     /// call (the proxy takes `Arc<RootCa>` as a constructor
     /// arg).
     ca: Arc<bk_proxy::RootCa>,
+    /// The proxy event bus sender (cloned into the spawned
+    /// task). `subscribe_events` uses this to mint fresh
+    /// subscribers for the §4.2 wire bus.
+    proxy_event_tx: Option<broadcast::Sender<ProxyEvent>>,
 }
 
 impl ProxyHandle {
@@ -99,6 +103,7 @@ impl ProxyHandle {
                     last_error: None,
                 })),
                 ca: Arc::new(ca),
+                proxy_event_tx: None,
             }),
         }
     }
@@ -114,6 +119,37 @@ impl ProxyHandle {
             .clone()
     }
 
+    /// Subscribe to the proxy's event bus. Returns a fresh
+    /// `broadcast::Receiver<ProxyEvent>`. Used by the §4.2
+    /// `wire_bus` to feed the engine+proxy fan-in.
+    pub fn subscribe_events(&self) -> broadcast::Receiver<ProxyEvent> {
+        // The proxy event bus is owned by the spawned task
+        // and is not directly accessible from outside. We
+        // use a `OnceCell`-like lazy pattern: the FIRST call
+        // to `start` creates the bus and stores a sender
+        // clone; subsequent calls subscribe to it.
+        //
+        // For v1 we take a simpler path: the handle owns
+        // an `Option<broadcast::Sender<ProxyEvent>>` that's
+        // populated by `start`, and `subscribe_events`
+        // returns a fresh subscriber on it. Before `start`
+        // is called, `subscribe_events` returns a closed
+        // receiver (the bus hasn't been created yet).
+        self.inner
+            .blocking_lock()
+            .proxy_event_tx
+            .as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| {
+                // Return a closed receiver; subscribers
+                // immediately see `RecvError::Closed` and
+                // exit their loops.
+                let (tx, rx) = broadcast::channel(1);
+                drop(tx);
+                rx
+            })
+    }
+
     /// Start the proxy. Idempotent: a no-op if already running.
     /// Returns an error if the bind fails (e.g. the port is
     /// already in use).
@@ -123,9 +159,15 @@ impl ProxyHandle {
             // Already running; idempotent.
             return Ok(());
         }
+        // Create the proxy event bus BEFORE building the
+        // proxy, so `subscribe_events` (called by the
+        // §4.2 wire bus) gets a working receiver. The
+        // bus is then cloned into the spawned task.
+        let (proxy_event_tx, _proxy_event_rx) = broadcast::channel::<ProxyEvent>(256);
         let (tx, rx) = watch::channel(false);
         let ca = inner.ca.clone();
         let status = inner.status.clone();
+        let proxy_event_tx_for_task = proxy_event_tx.clone();
         let task = tauri::async_runtime::spawn(async move {
             // Build the proxy; subscribe to the event bus BEFORE
             // `run` so we don't miss the `ProxyStarted` event.
@@ -133,8 +175,18 @@ impl ProxyHandle {
             // the main task and the event-listener task each
             // hold their own subscriber.
             let proxy = Proxy::new(config, ca);
+            // Bridge the proxy's internal event bus to the
+            // handle's external bus (the §4.2 wire bus
+            // subscribes to this).
+            let mut internal_events = proxy.events().subscribe();
+            let bridge_task = tauri::async_runtime::spawn(async move {
+                while let Ok(event) = internal_events.recv().await {
+                    let _ = proxy_event_tx_for_task.send(event);
+                }
+            });
             let events = proxy.events();
             let result = ProxyHandle::run_with_events(proxy, rx, status.clone(), events).await;
+            bridge_task.abort();
             match result {
                 Ok(()) => {
                     info!("bk-proxy: clean shutdown");
@@ -149,9 +201,9 @@ impl ProxyHandle {
         });
         inner.task = Some(task);
         inner.shutdown_tx = Some(tx);
+        inner.proxy_event_tx = Some(proxy_event_tx);
         Ok(())
     }
-
     /// Run the proxy to completion with a sibling event-listener
     /// task. Updates the public status on `ProxyStarted` /
     /// `ProxyStopped`.

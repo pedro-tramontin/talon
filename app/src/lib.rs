@@ -14,6 +14,7 @@ mod agent;
 mod commands;
 mod proxy_handle;
 mod wire;
+mod wire_bus;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ use tracing::info;
 
 use crate::commands::EngineArc;
 use crate::proxy_handle::{ProxyHandle, ProxyHandleArc};
+use crate::wire_bus::WireEventBus;
 
 /// Payload returned by the `greet` command. Round-tripped to the React
 /// `App` component on startup as a sanity check that the IPC bridge is
@@ -106,18 +108,20 @@ pub fn run() {
     tauri::Builder::default()
         .manage(agent::AgentState::new())
         .manage(wire::WireEventSeq::new())
+        .manage(WireEventBus::new())
         .manage(engine.clone())
         .manage(proxy.clone())
         .setup(move |app| {
-            // On startup, log the engine version so users (and our xvfb
-            // smoke tests) can verify the IPC bridge is alive even before
-            // opening DevTools.
+            // §4.2: wire the engine + proxy event buses into
+            // the WireEvent fan-in. The setup hook runs once
+            // at app start.
             info!(
                 version = %app.package_info().version,
                 config_dir = %config_dir.display(),
                 "talon engine started"
             );
-            let _ = app;
+            let app_handle = app.handle().clone();
+            wire_bus::setup_wire_bus(&app_handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

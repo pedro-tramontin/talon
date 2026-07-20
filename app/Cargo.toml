@@ -30,6 +30,7 @@ bk-engine = { workspace = true }
 bk-proxy = { workspace = true }
 bk-agent = { path = "../crates/bk-agent" }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
