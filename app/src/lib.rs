@@ -10,6 +10,8 @@
     windows_subsystem = "windows"
 )]
 
+mod agent;
+
 use serde::Serialize;
 
 /// Payload returned by the `greet` command. Round-tripped to the React
@@ -47,6 +49,7 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .manage(agent::AgentState::new())
         .setup(|app| {
             // On startup, log the engine version so users (and our xvfb
             // smoke tests) can verify the IPC bridge is alive even before
@@ -57,7 +60,12 @@ pub fn run() {
             );
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            agent::agent_start,
+            agent::agent_confirm_write,
+            agent::agent_cancel,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Talon");
 }
