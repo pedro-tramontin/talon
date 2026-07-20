@@ -3,7 +3,7 @@
 // `@tanstack/react-virtual` so a list of N items only mounts
 // ~O(visible window) DOM nodes.
 //
-// Spec (§4.5):
+// Spec (§4.5 + §4.8):
 //   - 48px row height, fixed for v1.
 //   - overscan: 10 — mount 10 extra rows above/below the
 //     visible window so fast scrolls don't flash empty rows.
@@ -15,19 +15,30 @@
 //   - Filter input above the list: free-text substring on
 //     `summary`, debounced 150ms so a 10k-row list isn't
 //     filtered on every keystroke.
+//   - §4.8: a "Full-text search" input BELOW the substring
+//     filter issues a debounced 200ms FTS5 query to the
+//     Rust backend (`searchExchanges`). When the FTS
+//     query is non-empty, the FTS result set is intersected
+//     with the in-memory list; when empty, the component
+//     falls back to the in-memory filter only.
 //
 // The component is pure display — it does not call any Tauri
-// IPC or execute any request bodies. Live updates come from
+// IPC directly other than the FTS5 search (which is
+// debounced + state-driven). Live updates come from
 // the §4.2 wire_event subscription calling `unshiftExchange`
 // / `removeExchange` on the store; the list re-virtualizes
 // automatically when the underlying array identity changes.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   useExchangeStore,
   useFilteredExchanges,
 } from "../state/exchange";
+import { useUiStore, FTS_DEBOUNCE_MS } from "../state/ui";
+import { useProjectStore } from "../state/project";
+import { searchExchanges } from "../api";
+import type { ExchangeSummary } from "../types/domain";
 import type { ExchangeId } from "../types/ids";
 import { LEFT_RAIL_PX } from "../routes/Capture";
 
@@ -90,10 +101,95 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
   const setSelectedId = useExchangeStore((s) => s.setSelectedId);
   const selectedId = useExchangeStore((s) => s.selectedId);
 
-  // The filtered list. Re-derived from the store on every
-  // store change; the virtualizer turns it into a window
-  // of visible rows.
-  const filtered = useFilteredExchanges();
+  // §4.8 — FTS5 query + result set. The input below the
+  // substring filter drives `filterFtsQuery` (debounced
+  // 200ms via the effect below) and the FTS result set
+  // is intersected with the in-memory filtered list.
+  const filterFtsQuery = useUiStore((s) => s.filterFtsQuery);
+  const setFilterFtsQuery = useUiStore((s) => s.setFilterFtsQuery);
+  const filterFtsResults = useUiStore((s) => s.filterFtsResults);
+  const setFilterFtsResults = useUiStore((s) => s.setFilterFtsResults);
+  const activeProjectId = useProjectStore((s) => s.activeProjectId);
+
+  // The filtered list (in-memory). Re-derived from the
+  // store on every store change; the virtualizer turns it
+  // into a window of visible rows.
+  const inMemoryFiltered = useFilteredExchanges();
+
+  // When the FTS query is non-empty, the visible list is
+  // the intersection of the in-memory filtered list and
+  // the FTS result set. When the FTS query is empty, we
+  // fall back to the in-memory filter only.
+  const filtered: ExchangeSummary[] = useMemo(() => {
+    if (filterFtsQuery.trim().length === 0) {
+      return inMemoryFiltered;
+    }
+    if (filterFtsResults.length === 0) {
+      // FTS query is set but the result set is still
+      // empty (either pre-debounce or the query
+      // returned zero matches). Render an empty list so
+      // the existing "no exchanges match" message
+      // shows. Avoids flickering the full list while the
+      // user is typing.
+      return [];
+    }
+    const allowed = new Set<string>(filterFtsResults);
+    return inMemoryFiltered.filter((e) => allowed.has(e.id));
+  }, [inMemoryFiltered, filterFtsQuery, filterFtsResults]);
+
+  // §4.8 — debounced FTS5 query. Wait 200ms after the
+  // last keystroke, then call `searchExchanges` against
+  // the active project. Empty / whitespace queries clear
+  // the result set (so the list falls back to the
+  // in-memory filter).
+  useEffect(() => {
+    const q = filterFtsQuery.trim();
+    if (q.length === 0) {
+      // Clear the result set so the list shows the
+      // in-memory filter only. Guard: if the result
+      // set is already empty, skip the setState to
+      // avoid an extra re-render (which would
+      // re-trigger this effect and the
+      // virtualizer's ResizeObserver in a tight
+      // loop during tests).
+      if (filterFtsResults.length > 0) {
+        setFilterFtsResults([]);
+      }
+      return;
+    }
+    if (!activeProjectId) {
+      // No project is open — clear results so the list
+      // doesn't show stale ids from a previous project.
+      if (filterFtsResults.length > 0) {
+        setFilterFtsResults([]);
+      }
+      return;
+    }
+    const handle = setTimeout(() => {
+      searchExchanges(activeProjectId, q)
+        .then((ids) => {
+          setFilterFtsResults(ids as ExchangeId[]);
+        })
+        .catch(() => {
+          // Backend error (malformed FTS5 query, etc.) —
+          // clear the result set so the user sees the
+          // existing empty-state message instead of
+          // stale rows. The error is intentionally
+          // swallowed here; the §4.8 v0.5 followup
+          // surfaces it as a red helper text under the
+          // input.
+          setFilterFtsResults([]);
+        });
+    }, FTS_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(handle);
+    };
+  }, [
+    filterFtsQuery,
+    filterFtsResults,
+    activeProjectId,
+    setFilterFtsResults,
+  ]);
 
   // Ref to the scrollable container. The virtualizer
   // attaches its scroll listener here.
@@ -154,6 +250,23 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
             setFilterInput(e.target.value);
           }}
           placeholder="summary…"
+          className="w-full rounded border border-slate-700 bg-bg-base px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-accent focus:outline-none"
+        />
+        <label
+          htmlFor="exchange-list-fts"
+          className="mt-3 mb-1 block text-xs uppercase tracking-wide text-slate-400"
+        >
+          Search by content
+        </label>
+        <input
+          id="exchange-list-fts"
+          data-testid="exchange-list-fts"
+          type="text"
+          value={filterFtsQuery}
+          onChange={(e) => {
+            setFilterFtsQuery(e.target.value);
+          }}
+          placeholder="url, body, headers, notes…"
           className="w-full rounded border border-slate-700 bg-bg-base px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-accent focus:outline-none"
         />
         <p
