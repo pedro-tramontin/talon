@@ -150,40 +150,27 @@ pub struct WireEvent {
     pub payload: serde_json::Value,
     /// Monotonic sequence number. Stamped on the Rust side at
     /// the `fan_in` boundary (or at the per-emit boundary in
-    /// §4.0's additive mode). Skipped on serialize because
-    /// callers may construct a `WireEvent` and then ask
-    /// `serde_json::to_value` to re-stamp the seq — see the
-    /// `from_event` helper below. The deserialize side
-    /// accepts `seq` so the UI can read a stamped value.
+    /// §4.0's additive mode). Included on serialize (it is
+    /// part of the on-wire shape) and accepted on deserialize.
+    /// The derive `Serialize` produces the final wire shape
+    /// `{kind, payload, seq}` directly — there is no need for a
+    /// separate "to_wire_value" helper.
     ///
     /// Default: `0` on deserialize if the field is absent. This
     /// keeps v1 readers compatible with v0 (pre-stamp) events
     /// that were sent without a seq — those events are treated
     /// as "seq 0" and the UI's drop-detection skips the gap
     /// check until it sees a non-zero seq.
-    #[serde(default, skip_deserializing)]
+    #[serde(default)]
     pub seq: u64,
 }
 
 impl WireEvent {
-    /// Build a `WireEvent` from a kind + a payload value, with a
-    /// fresh seq from the provided counter. Convenience wrapper
-    /// for the §4.0 additive-emit sites (`agent.rs`).
+    /// Build a `WireEvent` from a kind + a payload value + a
+    /// pre-stamped seq. Convenience wrapper for the §4.0
+    /// additive-emit sites (`agent.rs`).
     pub fn new(kind: WireEventKind, payload: serde_json::Value, seq: u64) -> Self {
         Self { kind, payload, seq }
-    }
-
-    /// Stamp a `WireEvent` for the wire. Returns a `serde_json::Value`
-    /// that includes the `seq` field (which is skipped on
-    /// `Serialize` derive because callers may want to inspect
-    /// the seq separately; this helper produces the FINAL wire
-    /// shape).
-    pub fn to_wire_value(&self) -> serde_json::Value {
-        serde_json::json!({
-            "kind": self.kind,
-            "payload": self.payload,
-            "seq": self.seq,
-        })
     }
 }
 
@@ -221,34 +208,34 @@ mod tests {
         assert_eq!(WireEventKind::ProxyEvent.as_str(), "proxy_event");
     }
 
-    /// `to_wire_value` produces a shape the React side can
-    /// `JSON.parse` directly. It is the helper the app uses to
-    /// emit through `app.emit_to("main", "wire_event", value)`.
+    /// A `WireEvent` with `seq: 0` round-trips through serde
+    /// with `seq: 0` preserved. The `#[serde(default)]` on
+    /// `seq` only kicks in for MISSING fields; an explicit
+    /// zero is preserved.
     #[test]
-    fn to_wire_value_includes_seq() {
-        let ev = WireEvent::new(
-            WireEventKind::AgentEvent,
-            serde_json::json!({"event": "agent_started", "agent_id": "r1"}),
-            99,
-        );
-        let v = ev.to_wire_value();
-        assert_eq!(v["kind"], "agent_event");
-        assert_eq!(v["payload"]["event"], "agent_started");
-        assert_eq!(v["seq"], 99);
-    }
-
-    /// A `WireEvent` constructed with `seq: 0` and serialized via
-    /// `to_wire_value` still has `seq: 0` in the output. The
-    /// `#[serde(skip_deserializing)]` is ONLY on deserialize; on
-    /// serialize the value is preserved.
-    #[test]
-    fn to_wire_value_preserves_zero_seq() {
+    fn wire_event_preserves_zero_seq_through_serde() {
         let ev = WireEvent::new(
             WireEventKind::ProxyEvent,
             serde_json::json!({"proxy": "started"}),
             0,
         );
-        let v = ev.to_wire_value();
+        let v = serde_json::to_value(&ev).expect("serialize");
         assert_eq!(v["seq"], 0);
+        let back: WireEvent = serde_json::from_value(v).expect("deserialize");
+        assert_eq!(back.seq, 0);
+    }
+
+    /// A JSON shape WITHOUT a `seq` field deserializes with
+    /// `seq: 0` (the `#[serde(default)]` default). This keeps
+    /// v1 readers compatible with v0 (pre-stamp) events.
+    #[test]
+    fn wire_event_deserializes_without_seq_field_as_zero() {
+        let v: serde_json::Value = serde_json::json!({
+            "kind": "agent_event",
+            "payload": {"event": "agent_started"},
+        });
+        let ev: WireEvent = serde_json::from_value(v).expect("deserialize");
+        assert_eq!(ev.kind, WireEventKind::AgentEvent);
+        assert_eq!(ev.seq, 0);
     }
 }

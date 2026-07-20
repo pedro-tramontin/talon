@@ -25,11 +25,20 @@
 //!    `tokio::select!` with the cancellation branch LAST so the
 //!    recv branch is the cancel-safe branch; this is the
 //!    canonical pattern in the tokio docs.)
-//! 4. Re-subscribe on Lagged so a slow consumer doesn't keep
-//!    losing events to the same ring overflow. The seq counter
-//!    is the load-bearing piece — the new subscription resumes
-//!    from the new tail, and the gap in seq is the signal the
-//!    React side uses to surface "missed events".
+//! 4. Tolerate `RecvError::Lagged` on a source by logging
+//!    a warning and continuing with the SAME receiver.
+//!    The seq counter keeps advancing, so the next received
+//!    event will have a seq that is `n+1` greater than the
+//!    last one we sent — that gap is the signal the React
+//!    side uses to surface "missed events". We do NOT
+//!    re-subscribe to the source on lag (the broadcast ring
+//!    advances on its own; the next `recv()` returns the
+//!    next event in the ring, not a re-subscription).
+//!    Re-subscription would be a behavior change with
+//!    subtle consequences (a new subscriber starts at the
+//!    current tail, losing any events that arrived between
+//!    the lag detection and the re-subscribe), and the seq
+//!    gap is the load-bearing drop signal we want anyway.
 //!
 //! ## Design
 //!
@@ -451,22 +460,23 @@ mod tests {
     /// detection).
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn fan_in_logs_warning_on_lagged_and_seq_remains_monotonic() {
-        // Initialize a tracing subscriber that captures
-        // `warn!` events so we can assert the lagged warning
-        // fired. We use `tracing_subscriber::fmt` with a
-        // custom writer that pipes into a `Vec<u8>`.
+        // Initialize a per-test tracing layer that captures
+        // `warn!` events into a `Vec<u8>` via a custom
+        // `MakeWriter`. Using a per-test layer (via
+        // `tracing::subscriber::with_default`) avoids the
+        // "already initialized" race that the global
+        // `tracing_subscriber::fmt::init` would hit if a
+        // sibling test in the same binary initialized first.
         //
         // The `tracing-subscriber` is in dev-deps for this
-        // exact reason. Multiple tests in the same
-        // `cargo test` invocation may try to install a
-        // global subscriber; we use `try_init` and ignore
-        // the "already initialized" error.
+        // exact reason. The captured `buf` is read at the
+        // end of the test to assert the "lagged" warning
+        // fired.
         use std::io::Write;
         use std::sync::{Arc, Mutex};
-        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-        // The make_writer closure must return a `Write`-able
-        // value, NOT the `Arc<Mutex<Vec<u8>>>` itself. We
-        // adapt with a small newtype.
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
         struct SharedBuf(Arc<Mutex<Vec<u8>>>);
         impl Write for SharedBuf {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -477,18 +487,21 @@ mod tests {
                 Ok(())
             }
         }
-        // Clone the `Arc` for the closure (the closure
-        // needs to move into the subscriber, but we still
-        // need the original to read the captured bytes at
-        // the end of the test).
-        let buf_for_writer = buf.clone();
-        let make_writer = move || -> Box<dyn Write> { Box::new(SharedBuf(buf_for_writer.clone())) };
-        let _ = tracing_subscriber::fmt()
-            .with_writer(make_writer)
+        struct SharedBufMaker(SharedBuf);
+        impl<'a> MakeWriter<'a> for SharedBufMaker {
+            type Writer = SharedBuf;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.0.clone()
+            }
+        }
+        let shared = SharedBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(SharedBufMaker(shared.clone()))
             .with_max_level(tracing::Level::WARN)
-            .try_init();
-
-        // Tiny source buffer (4) so we can overflow it
+            .with_target(false)
+            .finish();
+        let buf = shared.0.clone();
+        let _guard = tracing::subscriber::set_default(subscriber);
         // deterministically. Tiny sink buffer (4) so the
         // sink-side lag recovery path is also exercised.
         let (engine_tx, engine_rx) = broadcast::channel::<Value>(4);

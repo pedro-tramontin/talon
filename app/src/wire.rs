@@ -109,19 +109,14 @@ pub(crate) fn make_wire_event(
 /// with the `WireEvent` payload. Errors are logged but not
 /// propagated — the typed emit (which already happened) is
 /// the load-bearing one for v1 consumers.
-///
-/// `webview_label` is the webview label (per the existing
-/// `WEBVIEW_LABEL` constant in `agent.rs` — we don't
-/// re-import to avoid a cycle).
 pub(crate) fn emit_wire_event(app: &AppHandle, webview_label: &str, wire: &WireEvent) {
-    // The `to_wire_value` helper produces the on-wire
-    // shape (which includes `seq`); the typed
-    // `Serialize` impl on `WireEvent` skips `seq` (it's
-    // marked `skip_deserializing`, so the `Serialize` side
-    // also drops it for round-trip safety). We use
-    // `to_wire_value` so the seq makes it to the UI.
-    let payload = wire.to_wire_value();
-    if let Err(e) = app.emit_to(webview_label, WIRE_EVENT_LABEL, payload) {
+    // The derived `Serialize` on `WireEvent` produces the
+    // on-wire shape `{kind, payload, seq}` directly (the
+    // `#[serde(default)]` on `seq` only affects
+    // deserialization, not serialization). Tauri 2's
+    // `emit_to` accepts a `Serialize` and round-trips it
+    // through the IPC bridge.
+    if let Err(e) = app.emit_to(webview_label, WIRE_EVENT_LABEL, wire) {
         tracing::error!(
             kind = %wire.kind,
             seq = wire.seq,
