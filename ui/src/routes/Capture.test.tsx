@@ -69,10 +69,18 @@ describe("Capture route", () => {
     ).toMatch(/Select an exchange to view details/);
   });
 
-  it("renders the §4.5 placeholder text in the left rail", () => {
+  it("renders the virtualized exchange list in the left rail (lands in §4.5)", () => {
     render(<Capture />);
+    // The §4.5 virtualized list owns the filter input; its
+    // presence in the left rail confirms the placeholder
+    // has been replaced.
     const left = screen.getByTestId("capture-left-rail");
-    expect(left.textContent).toMatch(/§4\.5/);
+    expect(
+      left.querySelector('[data-testid="exchange-list"]'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("exchange-list-filter"),
+    ).toBeInTheDocument();
   });
 
   it("renders the 3 right-rail tabs (Inspector / Decoder / Notes)", () => {

@@ -1,8 +1,8 @@
 // Capture route. The 3-column layout for the §4.3-4.4 phase:
 //   - Top bar (h-12): project dropdown, derived from
 //     `useProjectStore`.
-//   - Left rail (w-60 / 240px): placeholder for the §4.5
-//     virtualized exchange list.
+//   - Left rail (w-60 / 240px): the §4.5 virtualized
+//     exchange list (`<ExchangeList />`).
 //   - Main (flex-1): empty state until §4.5+ wires the
 //     detail view.
 //   - Right rail (w-80 / 320px): 3 placeholder tabs
@@ -15,6 +15,7 @@
 // the same Tauri window for now).
 
 import { useProjectStore } from "../state/project";
+import { ExchangeList } from "../components/ExchangeList";
 
 /** Width of the left rail in px. Pinned at 240 to match the
  * Tailwind `w-60` class. The Capture.test.tsx test asserts
@@ -71,20 +72,20 @@ function ProjectDropdown() {
 }
 
 /**
- * Left-rail placeholder. The §4.5 PR replaces this with the
- * virtualized `<ExchangeList />`. For now it's a 240px-wide
- * empty panel with a "lands in §4.5" label.
+ * Left-rail container. The §4.5 PR wires the actual
+ * virtualized list here via `<ExchangeList />`. The
+ * `data-testid="capture-left-rail"` stays on the outer
+ * element so the Capture.test.tsx layout assertion (width
+ * pinning) still works.
  */
-function ExchangeListPlaceholder() {
+function ExchangeLeftRail() {
   return (
     <aside
       data-testid="capture-left-rail"
-      className="h-full border-r border-slate-800 bg-bg-rail"
+      className="h-full"
       style={{ width: `${LEFT_RAIL_PX}px` }}
     >
-      <div className="p-3 text-xs text-slate-500">
-        Exchange list (landed in §4.5)
-      </div>
+      <ExchangeList />
     </aside>
   );
 }
@@ -161,7 +162,7 @@ export function Capture() {
         <ProjectDropdown />
       </header>
       <div className="flex flex-1 overflow-hidden">
-        <ExchangeListPlaceholder />
+        <ExchangeLeftRail />
         <MainEmpty />
         <RightRailPlaceholder />
       </div>
