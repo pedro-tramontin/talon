@@ -36,7 +36,7 @@ describe("useProxyStore", () => {
   it("setStatus replaces the whole status", () => {
     const next: ProxyStatus = {
       state: "running",
-      listener_addr: { ip: "127.0.0.1", port: 8080 },
+      listener_addr: "127.0.0.1:8080",
       ca_fingerprint: "ab:cd:ef",
       last_error: null,
     };

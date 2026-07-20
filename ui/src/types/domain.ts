@@ -100,13 +100,13 @@ export interface ExchangeDetail {
 }
 
 /**
- * `SocketAddr` as it appears on the wire. The `ip` is a string
- * (v4 or v6 — v6 is bracketed, e.g. `[::1]:8080`).
+ * `SocketAddr` as it appears on the wire. The Rust
+ * `std::net::SocketAddr` serializes via serde as a single
+ * `"ip:port"` string (e.g. `"127.0.0.1:8080"`, or
+ * `"[::1]:8080"` for IPv6). We mirror that exactly so the
+ * IPC payload round-trips cleanly.
  */
-export interface SocketAddr {
-  readonly ip: string;
-  readonly port: number;
-}
+export type SocketAddr = string;
 
 /**
  * Proxy status DTO, mirror of
