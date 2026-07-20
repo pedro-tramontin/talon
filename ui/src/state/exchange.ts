@@ -13,6 +13,7 @@
 // mount to restore position after a detail-view round-trip.
 
 import { createStore, useStore } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import type { StoreApi } from "zustand/vanilla";
 import type { ExchangeSummary } from "../types/domain";
 import type { ExchangeId } from "../types/ids";
@@ -133,4 +134,58 @@ export const exchangeStore: StoreApi<ExchangeStore> = createExchangeStore();
  */
 export function useExchangeStore<T>(selector: (state: ExchangeStore) => T): T {
   return useStore(exchangeStore, selector);
+}
+
+/**
+ * Predicate: does this row match the given filter? v0.1 only
+ * wires the `text` field (free-text substring on `summary`);
+ * the status / method / tag fields stay present on the
+ * filter state for v0.2 to fill in. We expose the helper so
+ * tests can exercise the matching logic without standing up
+ * a renderer.
+ */
+export function matchesExchangeFilter(
+  row: ExchangeSummary,
+  filter: ExchangeFilter,
+): boolean {
+  // Text filter: case-insensitive substring on the summary.
+  // An empty filter text is the "any text" case (no-op).
+  if (filter.text.trim().length > 0) {
+    const needle = filter.text.trim().toLowerCase();
+    const hay = row.summary.toLowerCase();
+    if (!hay.includes(needle)) return false;
+  }
+  return true;
+}
+
+/**
+ * Selector: the exchanges list filtered by the active filter.
+ * Returns a new array (slice) so React re-renders downstream
+ * consumers. The slice is recomputed only when the inputs
+ * change (the underlying array identity or the filter object).
+ *
+ * Implementation note: we use `useShallow` on the
+ * `[exchanges, filter]` tuple so the selector itself only
+ * re-fires when one of those two values actually changes by
+ * reference. The `.filter(...)` call inside the hook then
+ * only runs when the inputs change, not on every store
+ * notification.
+ *
+ * The §4.5 virtualized list uses this so it can render only
+ * the rows that survive the current filter without having to
+ * know about the filter shape.
+ */
+export function useFilteredExchanges(): ExchangeSummary[] {
+  // `useShallow` compares the tuple element-by-element so
+  // the downstream filter only runs when the inputs
+  // change by reference. The `.filter(...)` still returns
+  // a new array each call, but only when needed.
+  const [exchanges, filter] = useStore(
+    exchangeStore,
+    useShallow((state) => [state.exchanges, state.filter] as const),
+  );
+  if (filter.text.trim().length === 0) {
+    return exchanges;
+  }
+  return exchanges.filter((e) => matchesExchangeFilter(e, filter));
 }
