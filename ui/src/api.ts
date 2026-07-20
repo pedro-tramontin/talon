@@ -227,3 +227,28 @@ export async function startProxy(): Promise<void> {
 export async function stopProxy(): Promise<void> {
   await invoke<void>("stop_proxy");
 }
+
+/**
+ * `search_exchanges(project_id, query, limit) -> ExchangeId[]`.
+ *
+ * FTS5 search wrapper. Returns matching exchange IDs ranked
+ * by FTS5's BM25 (best first). The React side intersects the
+ * returned IDs with the in-memory exchange list to render
+ * the filtered rows.
+ *
+ * Errors:
+ * - `"query is empty"` — the query was empty / whitespace.
+ * - `"search_exchanges failed: ..."` — any other backend
+ *   error (project not open, malformed FTS5 query, etc.).
+ */
+export async function searchExchanges(
+  project_id: DomainProjectId,
+  query: string,
+  limit: number = 1000,
+): Promise<DomainExchangeId[]> {
+  return await invoke<DomainExchangeId[]>("search_exchanges", {
+    projectId: project_id,
+    query,
+    limit,
+  });
+}
