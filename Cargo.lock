@@ -103,6 +103,7 @@ version = "0.1.0"
 dependencies = [
  "bk-agent",
  "bk-core",
+ "bk-events",
  "serde",
  "serde_json",
  "tauri",
@@ -422,6 +423,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "bk-events"
+version = "0.1.0"
+dependencies = [
+ "bk-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
