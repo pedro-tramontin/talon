@@ -12,13 +12,21 @@
 
 import { createStore, useStore } from "zustand";
 import type { StoreApi } from "zustand/vanilla";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   agentCancel,
   agentConfirmWrite,
   agentStart,
   onAgentEvent,
+  onConfirmRequest,
+  onConfirmResponse,
 } from "../api";
-import type { AgentConfig, AgentEvent } from "../types/agent";
+import type {
+  AgentConfig,
+  AgentEvent,
+  ConfirmRequestPayload,
+  ConfirmResponsePayload,
+} from "../types/agent";
 
 /**
  * How long a pending write-tool confirmation waits for a user
@@ -53,6 +61,10 @@ export type AgentStore = {
   startRun: (goal: string, config: AgentConfig) => Promise<void>;
   /** Append a single `AgentEvent` to the right run. */
   handleEvent: (event: AgentEvent) => void;
+  /** Apply a confirmation request from the `agent_confirm_request` channel. */
+  handleConfirmRequest: (payload: ConfirmRequestPayload) => void;
+  /** Apply a confirmation response from the `agent_confirm_response` channel. */
+  handleConfirmResponse: (payload: ConfirmResponsePayload) => void;
   /** Respond to a pending confirmation. */
   respondConfirm: (
     runId: string,
@@ -64,27 +76,60 @@ export type AgentStore = {
 };
 
 /**
- * Build the vanilla store. The `onAgentEvent` subscription is wired
- * lazily on the first `startRun` call (rather than at module init),
- * which avoids TDZ-on-test-import issues with `vi.mock` hoisting and
- * keeps the store testable without mocking the Tauri listen bridge.
+ * Build the vanilla store. The three Tauri event subscriptions
+ * (`agent_event`, `agent_confirm_request`, `agent_confirm_response`)
+ * are wired lazily on the first `startRun` call (rather than at
+ * module init), which avoids TDZ-on-test-import issues with
+ * `vi.mock` hoisting and keeps the store testable without
+ * mocking the Tauri listen bridge. `startRun` awaits
+ * `ensureSubscribed()` so all three listeners are wired BEFORE
+ * the Rust side is asked to emit any events for the new run.
  */
 function createAgentStore() {
-  // Lazily-initialized unlisten for the agent_event subscription.
-  // Set by the first `startRun` call; cleared by HMR teardown if
-  // the module is re-imported.
-  let unlisten: (() => void) | null = null;
+  // Lazily-initialized unlistens for the three Tauri event channels
+  // we listen to. Set by `ensureSubscribed`; cleared by HMR teardown
+  // if the module is re-imported.
+  let eventUnlisten: UnlistenFn | null = null;
+  let requestUnlisten: UnlistenFn | null = null;
+  let responseUnlisten: UnlistenFn | null = null;
 
   const ensureSubscribed = async () => {
-    if (unlisten) return;
-    try {
-      unlisten = await onAgentEvent((event) => {
-        agentStore.getState().handleEvent(event);
-      });
-    } catch (e) {
-      // Surface subscription errors in the console but don't
-      // crash the store; the UI just won't get events.
-      console.error("failed to subscribe to agent_event:", e);
+    // Wire all three channels. Each is independent so a failure in
+    // one doesn't block the others; we still await each `listen`
+    // because the handlers reference `agentStore` which is bound
+    // once the factory returns.
+    if (!eventUnlisten) {
+      try {
+        eventUnlisten = await onAgentEvent((event) => {
+          agentStore.getState().handleEvent(event);
+        });
+      } catch (e) {
+        console.error("failed to subscribe to agent_event:", e);
+      }
+    }
+    if (!requestUnlisten) {
+      try {
+        requestUnlisten = await onConfirmRequest((payload) => {
+          agentStore.getState().handleConfirmRequest(payload);
+        });
+      } catch (e) {
+        console.error(
+          "failed to subscribe to agent_confirm_request:",
+          e,
+        );
+      }
+    }
+    if (!responseUnlisten) {
+      try {
+        responseUnlisten = await onConfirmResponse((payload) => {
+          agentStore.getState().handleConfirmResponse(payload);
+        });
+      } catch (e) {
+        console.error(
+          "failed to subscribe to agent_confirm_response:",
+          e,
+        );
+      }
     }
   };
 
@@ -103,93 +148,164 @@ function createAgentStore() {
         project_id: "00000000-0000-0000-0000-000000000000",
         target_host: "localhost",
       };
-      // Wire the agent_event listener lazily (on first run). This
-      // avoids subscribing at module init, which is hostile to
-      // vi.mock-based test environments.
-      void ensureSubscribed();
+      // Wire the three agent_* listeners BEFORE asking Rust to
+      // start a run. Without this, the Rust side can emit early
+      // `agent_event`s (and even terminal events on a fast LLM
+      // response) before the listener is attached, losing the
+      // first and possibly final events for the run.
+      await ensureSubscribed();
       const runId = await agentStart(goal, config, runContext);
-      set((state) => ({
-        runs: {
-          ...state.runs,
-          [runId]: {
-            goal,
-            status: "running",
-            events: [],
+      set((state) => {
+        // If `handleEvent` already created the run entry (because
+        // events raced in before this `set` call), preserve its
+        // events and status — only fill in the goal/activeRunId
+        // and upgrade the empty `goal` placeholder if necessary.
+        const existing = state.runs[runId];
+        if (existing) {
+          return {
+            runs: {
+              ...state.runs,
+              [runId]: { ...existing, goal: existing.goal || goal },
+            },
+            activeRunId: runId,
+          };
+        }
+        return {
+          runs: {
+            ...state.runs,
+            [runId]: {
+              goal,
+              status: "running",
+              events: [],
+            },
           },
-        },
-        activeRunId: runId,
-      }));
+          activeRunId: runId,
+        };
+      });
     },
 
-      handleEvent(event) {
-        // Every event carries an `agent_id`. We use that as the run
-        // key (it's the same UUID the Rust side hands out at start).
-        const runId = extractAgentId(event);
-        if (!runId) return;
-        set((state) => {
-          const existing = state.runs[runId];
-          if (!existing) {
-            // Unknown run — drop. This can happen if the store
-            // hasn't been mounted yet (race on page load).
-            return {};
+    handleEvent(event) {
+      // Every event carries an `agent_id`. We use that as the run
+      // key (it's the same UUID the Rust side hands out at start).
+      const runId = extractAgentId(event);
+      if (!runId) return;
+      set((state) => {
+        const existing = state.runs[runId];
+        // "Create on first event": if a run entry doesn't exist
+        // yet (because events raced ahead of `agentStart` resolving
+        // and `startRun` calling `set`), synthesize one with an
+        // empty `goal` placeholder. `startRun` will upgrade the
+        // goal when it lands.
+        const base: AgentRun = existing ?? {
+          goal: "",
+          status: "running",
+          events: [],
+        };
+        const next: AgentRun = {
+          ...base,
+          events: [...base.events, event],
+        };
+        // Update status from terminal events.
+        if (event.event === "agent_finished") {
+          next.status = "finished";
+        } else if (event.event === "agent_error") {
+          // The "cancelled by user" error from `agent_cancel` is
+          // surfaced as a cancelled status; any other error
+          // becomes `error`.
+          if (event.error === "cancelled by user") {
+            next.status = "cancelled";
+          } else {
+            next.status = "error";
           }
-          const next: AgentRun = {
-            ...existing,
-            events: [...existing.events, event],
-          };
-          // Update status from terminal events.
-          if (event.event === "agent_finished") {
-            next.status = "finished";
-          } else if (event.event === "agent_error") {
-            // The "cancelled by user" error from `agent_cancel` is
-            // surfaced as a cancelled status; any other error
-            // becomes `error`.
-            if (event.error === "cancelled by user") {
-              next.status = "cancelled";
-            } else {
-              next.status = "error";
-            }
-          }
-          return {
-            runs: { ...state.runs, [runId]: next },
-          };
-        });
-      },
-
-      async respondConfirm(runId, allowed, remember) {
-        // Clear the local UI timeout so we don't auto-deny right
-        // after the user already responded.
-        const t = get().confirmTimeouts.get(runId);
-        if (t !== undefined) {
-          clearTimeout(t);
-          get().confirmTimeouts.delete(runId);
         }
-        // Clear the pending confirm optimistically; the
-        // `agent_confirm_response` event from Rust will be a
-        // no-op if the modal is already gone.
-        set((state) => {
-          const existing = state.runs[runId];
-          if (!existing) return {};
-          const { pendingConfirm: _drop, ...rest } = existing;
-          return {
-            runs: { ...state.runs, [runId]: rest },
-          };
-        });
-        await agentConfirmWrite(runId, allowed, remember);
-      },
+        return {
+          runs: { ...state.runs, [runId]: next },
+        };
+      });
+    },
 
-      async cancelRun(runId) {
-        // Clear the UI timeout; the Rust side will wake the
-        // pending oneshot with a deny and emit a `cancelled by
-        // user` agent_event.
-        const t = get().confirmTimeouts.get(runId);
-        if (t !== undefined) {
-          clearTimeout(t);
-          get().confirmTimeouts.delete(runId);
-        }
-        await agentCancel(runId);
-      },
-    }));
+    handleConfirmRequest(payload) {
+      // The Rust side has asked the WebView to confirm a write
+      // tool call. Set the `pendingConfirm` field on the run so
+      // the modal appears. If the run entry doesn't exist yet
+      // (e.g. the request raced ahead of `startRun`), synthesize
+      // a stub — `startRun` will backfill the goal.
+      const runId = payload.run_id;
+      set((state) => {
+        const existing = state.runs[runId];
+        const base: AgentRun = existing ?? {
+          goal: "",
+          status: "running",
+          events: [],
+        };
+        return {
+          runs: {
+            ...state.runs,
+            [runId]: {
+              ...base,
+              pendingConfirm: {
+                toolName: payload.tool_name,
+                args: payload.args,
+                since: Date.now(),
+              },
+            },
+          },
+        };
+      });
+    },
+
+    handleConfirmResponse(payload) {
+      // The Rust side has resolved the confirmation (user
+      // answered, timeout fired, or run was cancelled). Clear
+      // `pendingConfirm` so the modal closes; the
+      // `agent_confirm_response` event is the canonical signal
+      // — `respondConfirm` clears the field optimistically and
+      // this handler is a no-op if the field is already gone.
+      const runId = payload.run_id;
+      set((state) => {
+        const existing = state.runs[runId];
+        if (!existing || !existing.pendingConfirm) return {};
+        const { pendingConfirm: _drop, ...rest } = existing;
+        return {
+          runs: { ...state.runs, [runId]: rest },
+        };
+      });
+    },
+
+    async respondConfirm(runId, allowed, remember) {
+      // Clear the local UI timeout so we don't auto-deny right
+      // after the user already responded.
+      const t = get().confirmTimeouts.get(runId);
+      if (t !== undefined) {
+        clearTimeout(t);
+        get().confirmTimeouts.delete(runId);
+      }
+      // Clear the pending confirm optimistically; the
+      // `agent_confirm_response` event from Rust will be a
+      // no-op if the modal is already gone.
+      set((state) => {
+        const existing = state.runs[runId];
+        if (!existing) return {};
+        const { pendingConfirm: _drop, ...rest } = existing;
+        return {
+          runs: { ...state.runs, [runId]: rest },
+        };
+      });
+      await agentConfirmWrite(runId, allowed, remember);
+    },
+
+    async cancelRun(runId) {
+      // Clear the UI timeout; the Rust side will wake the
+      // pending oneshot with a deny and emit a `cancelled by
+      // user` agent_event.
+      const t = get().confirmTimeouts.get(runId);
+      if (t !== undefined) {
+        clearTimeout(t);
+        get().confirmTimeouts.delete(runId);
+      }
+      await agentCancel(runId);
+    },
+  }));
 
   return store;
 }

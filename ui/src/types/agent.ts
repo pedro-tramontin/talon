@@ -12,7 +12,7 @@
  * Connection config for an OpenAI-compatible LLM provider. Mirrors
  * `bk_agent::AgentConfig` (see `crates/bk-agent/src/config.rs`).
  *
- * Note: `api_key` is `Option<String>` and may be `null`/undefined —
+ * Note: `api_key` is `Option<String>` and may be `null` —
  * the Rust `validate()` method will reject a missing key, so the UI
  * should not let the user submit a config without one.
  */

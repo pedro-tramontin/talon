@@ -417,9 +417,17 @@ async fn drive_confirmation(
     {
         let mut slot = handle.confirm_tx.lock().expect("confirm_tx mutex poisoned");
         // If there's already a pending confirmation, drop the new
-        // one on the floor: only one prompt at a time. The dropped
-        // sender means rx will resolve to "no response", which the
-        // match below treats as Timeout.
+        // sender on the floor: only one prompt at a time. The
+        // previous confirmation is still in flight on the original
+        // sender (it is what gets the 5-min timeout below); this
+        // new `tx` is unused. Note that the timeout match below
+        // distinguishes three cases:
+        //   * `Ok(Ok(resp))`      — user responded (allow or deny).
+        //   * `Ok(Err(_dropped))` — the PREVIOUS sender was dropped
+        //                           (e.g. via `agent_cancel` clearing
+        //                           the slot). Treated as `Deny`.
+        //   * `Err(_elapsed)`     — the timeout fired before any
+        //                           response. Treated as `Timeout`.
         if slot.is_some() {
             tracing::warn!(
                 run_id = %run_id,
