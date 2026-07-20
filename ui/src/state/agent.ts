@@ -7,20 +7,39 @@
 //
 // We use the vanilla `createStore` + `useStore` pattern (rather than
 // the React-only `create`) so the store can be subscribed to from
-// outside React (e.g. the `onAgentEvent` listener) without dragging
-// React into the bridge module.
+// outside React (e.g. the wire-bus listener) without dragging React
+// into the bridge module.
+//
+// ## §4.3-4.4 migration
+//
+// The §3.5d version of this store subscribed to the Tauri-typed
+// `agent_event` channel via `onAgentEvent(...)` from `ui/src/api.ts`.
+// Phase 4 §4.2 introduced a single additive `wire_event` channel
+// (the §4.0 `bk_events::WireEvent` envelope, see
+// `crates/bk-events/src/lib.rs`) that fan-ins ALL three event
+// sources (engine / agent / proxy) into one shape. The §4.3-4.4
+// migration switches this store's internal subscription to the
+// new `WireClient.subscribe('agent_event', ...)` path. The
+// external API (`startRun`, `cancelRun`, `respondConfirm`, the
+// `useAgentStore` selector hook) is UNCHANGED — only the
+// internal subscribe path changes.
+//
+// The subscription is wired LAZILY on the first `startRun` call
+// (Pitfall #37 from the §3.5d session: no module-level
+// `let capturedHandlers`; the wireClient singleton is initialized
+// on first use). The WireClient is exported by `ui/src/lib/ws.ts`
+// and is connected from `App.tsx` on mount.
 
 import { createStore, useStore } from "zustand";
 import type { StoreApi } from "zustand/vanilla";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   agentCancel,
   agentConfirmWrite,
   agentStart,
-  onAgentEvent,
   onConfirmRequest,
   onConfirmResponse,
 } from "../api";
+import { getWireClient } from "../lib/ws";
 import type {
   AgentConfig,
   AgentEvent,
@@ -76,35 +95,91 @@ export type AgentStore = {
 };
 
 /**
- * Build the vanilla store. The three Tauri event subscriptions
- * (`agent_event`, `agent_confirm_request`, `agent_confirm_response`)
- * are wired lazily on the first `startRun` call (rather than at
- * module init), which avoids TDZ-on-test-import issues with
- * `vi.mock` hoisting and keeps the store testable without
- * mocking the Tauri listen bridge. `startRun` awaits
- * `ensureSubscribed()` so all three listeners are wired BEFORE
- * the Rust side is asked to emit any events for the new run.
+ * Build the vanilla store. The wire-bus subscription
+ * (`wireClient.subscribe('agent_event', ...)`) and the two
+ * remaining Tauri-typed subscriptions
+ * (`agent_confirm_request`, `agent_confirm_response`) are wired
+ * lazily on the first `startRun` call (rather than at module
+ * init), which avoids TDZ-on-test-import issues with `vi.mock`
+ * hoisting and keeps the store testable without mocking the
+ * Tauri listen bridge. `startRun` awaits `ensureSubscribed()`
+ * so all three listeners are wired BEFORE the Rust side is
+ * asked to emit any events for the new run.
+ *
+ * The two confirm channels are still typed-listener
+ * subscriptions (they're not on the wire bus in §4.2 — the
+ * confirm channels are point-to-point RPC patterns, not the
+ * fan-in event-bus; they stay on their own dedicated Tauri
+ * channels).
  */
+/**
+ * Module-private function the factory binds its lazy-subscribe
+ * reset to. Set by `createAgentStore` on first call (it's
+ * per-factory-instance, but the singleton `agentStore` is the
+ * only instance in practice). Tests call the exported
+ * `resetAgentTestState()` below.
+ */
+let _resetAgentStateForTests: () => void = () => {};
+
 function createAgentStore() {
-  // Lazily-initialized unlistens for the three Tauri event channels
-  // we listen to. Set by `ensureSubscribed`; cleared by HMR teardown
-  // if the module is re-imported.
-  let eventUnlisten: UnlistenFn | null = null;
-  let requestUnlisten: UnlistenFn | null = null;
-  let responseUnlisten: UnlistenFn | null = null;
+  // Lazily-initialized unlistens for the two Tauri event
+  // channels we still listen to (confirm request + response).
+  // Set by `ensureSubscribed`; cleared by HMR teardown if the
+  // module is re-imported.
+  let requestUnlisten: (() => void) | null = null;
+  let responseUnlisten: (() => void) | null = null;
+  // The agent-event unlisten is a closure that detaches the
+  // wire-bus handler. Captured on first `ensureSubscribed` so
+  // the HMR teardown can call it.
+  let agentEventUnsubscribe: (() => void) | null = null;
+
+  /**
+   * Test-only: clear the lazy-subscribe state so the next
+   * `startRun` re-subscribes to the wire bus + the two
+   * confirm channels. Production code never calls this; the
+   * §4.3-4.4 vitest harness uses it to keep tests
+   * independent. Defined inside the factory so it can
+   * close-over the three unlisten references.
+   */
+  const resetForTests = () => {
+    if (agentEventUnsubscribe) {
+      agentEventUnsubscribe();
+      agentEventUnsubscribe = null;
+    }
+    if (requestUnlisten) {
+      requestUnlisten();
+      requestUnlisten = null;
+    }
+    if (responseUnlisten) {
+      responseUnlisten();
+      responseUnlisten = null;
+    }
+  };
+  // Register the reset hook at the module level so the
+  // exported `resetAgentTestState()` can reach it.
+  _resetAgentStateForTests = resetForTests;
+
 
   const ensureSubscribed = async () => {
-    // Wire all three channels. Each is independent so a failure in
-    // one doesn't block the others; we still await each `listen`
-    // because the handlers reference `agentStore` which is bound
-    // once the factory returns.
-    if (!eventUnlisten) {
+    // The wire bus is the new path for `agent_event`. We
+    // subscribe ONCE (the WireClient owns the per-kind handler
+    // set) — re-subscribing just adds a duplicate handler.
+    if (!agentEventUnsubscribe) {
       try {
-        eventUnlisten = await onAgentEvent((event) => {
-          agentStore.getState().handleEvent(event);
-        });
+        const client = getWireClient();
+        agentEventUnsubscribe = client.subscribe(
+          "agent_event",
+          (payload) => {
+            // The wire envelope is type-erased; the Rust
+            // `agent_event` payload IS an `AgentEvent` JSON
+            // value. We cast and forward.
+            agentStore
+              .getState()
+              .handleEvent(payload as AgentEvent);
+          },
+        );
       } catch (e) {
-        console.error("failed to subscribe to agent_event:", e);
+        console.error("failed to subscribe wire 'agent_event':", e);
       }
     }
     if (!requestUnlisten) {
@@ -148,8 +223,9 @@ function createAgentStore() {
         project_id: "00000000-0000-0000-0000-000000000000",
         target_host: "localhost",
       };
-      // Wire the three agent_* listeners BEFORE asking Rust to
-      // start a run. Without this, the Rust side can emit early
+      // Wire the wire-bus agent_event handler + the two
+      // confirm listeners BEFORE asking Rust to start a run.
+      // Without this, the Rust side can emit early
       // `agent_event`s (and even terminal events on a fast LLM
       // response) before the listener is attached, losing the
       // first and possibly final events for the run.
@@ -323,6 +399,17 @@ function extractAgentId(event: AgentEvent): string | null {
 // Singleton store for app-wide use. The `createAgentStore` call is
 // idempotent: re-subscribing on HMR replaces the previous unlisten.
 export const agentStore: StoreApi<AgentStore> = createAgentStore();
+
+/**
+ * Test-only: reset the lazy-subscribe state so the next
+ * `startRun` re-subscribes to the wire bus + the two
+ * confirm channels. Production code never calls this; the
+ * §4.3-4.4 vitest harness uses it to keep tests
+ * independent.
+ */
+export function resetAgentTestState(): void {
+  _resetAgentStateForTests();
+}
 
 /**
  * React hook for the agent store. Use with a selector to limit
