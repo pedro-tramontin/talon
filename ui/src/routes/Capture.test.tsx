@@ -85,13 +85,16 @@ describe("Capture route", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the 3 right-rail tabs (Inspector / Decoder / Notes)", () => {
+  it("renders the 4 right-rail tabs (Inspector / Decoder / Diff / Notes)", () => {
     render(<Capture />);
     expect(
       screen.getByTestId("capture-right-rail-tab-inspector"),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId("capture-right-rail-tab-decoder"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("capture-right-rail-tab-diff"),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId("capture-right-rail-tab-notes"),
