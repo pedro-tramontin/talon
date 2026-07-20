@@ -11,9 +11,19 @@
 )]
 
 mod agent;
+mod commands;
+mod proxy_handle;
 mod wire;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use bk_engine::Engine;
 use serde::Serialize;
+use tracing::info;
+
+use crate::commands::EngineArc;
+use crate::proxy_handle::{ProxyHandle, ProxyHandleArc};
 
 /// Payload returned by the `greet` command. Round-tripped to the React
 /// `App` component on startup as a sanity check that the IPC bridge is
@@ -38,6 +48,37 @@ fn greet(app: tauri::AppHandle) -> Greeting {
     }
 }
 
+/// Resolves the Talon config directory. Falls back to the
+/// system temp dir on platforms where the standard config dir
+/// is unavailable.
+fn default_config_dir() -> PathBuf {
+    system_config_dir()
+        .or_else(system_data_dir)
+        .unwrap_or_else(|| std::env::temp_dir().join("talon"))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn system_config_dir() -> Option<PathBuf> {
+    // `dirs` is a transitive dep of `bk-store`; use it
+    // directly rather than adding a new dep.
+    Some(dirs::config_dir()?.join("talon"))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn system_config_dir() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn system_data_dir() -> Option<PathBuf> {
+    Some(dirs::data_dir()?.join("talon"))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn system_data_dir() -> Option<PathBuf> {
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize tracing so the `tracing::info!` in the setup hook and
@@ -49,21 +90,45 @@ pub fn run() {
         .with_level(true)
         .init();
 
+    let config_dir = default_config_dir();
+    let engine: EngineArc = match Engine::new(config_dir.clone()) {
+        Ok(e) => Arc::new(e),
+        Err(err) => {
+            eprintln!(
+                "talon: failed to create engine at {}: {err}",
+                config_dir.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    let proxy: ProxyHandleArc = Arc::new(ProxyHandle::new(&config_dir));
+
     tauri::Builder::default()
         .manage(agent::AgentState::new())
         .manage(wire::WireEventSeq::new())
-        .setup(|app| {
+        .manage(engine.clone())
+        .manage(proxy.clone())
+        .setup(move |app| {
             // On startup, log the engine version so users (and our xvfb
             // smoke tests) can verify the IPC bridge is alive even before
             // opening DevTools.
-            tracing::info!(
+            info!(
                 version = %app.package_info().version,
+                config_dir = %config_dir.display(),
                 "talon engine started"
             );
+            let _ = app;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            commands::open_project,
+            commands::close_project,
+            commands::list_exchanges,
+            commands::get_exchange,
+            commands::proxy_status,
+            commands::start_proxy,
+            commands::stop_proxy,
             agent::agent_start,
             agent::agent_confirm_write,
             agent::agent_cancel,
