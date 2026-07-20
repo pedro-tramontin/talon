@@ -25,8 +25,15 @@ tauri = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 bk-core = { workspace = true }
+bk-agent = { path = "../crates/bk-agent" }
+tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# `test-util` is included in the workspace `tokio` `full` feature set,
+# so a bare `workspace = true` re-export is enough.
 
 [features]
 # Default: production. Custom protocol is required for Tauri 2 on Linux.

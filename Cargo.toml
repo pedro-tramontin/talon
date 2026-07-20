@@ -32,7 +32,10 @@ bk-engine = { path = "crates/bk-engine" }
 bk-mcp = { path = "crates/bk-mcp" }
 
 # Async runtime
-tokio = { version = "1.40", features = ["full"] }
+# `full` covers all the runtime bits we use in production; `test-util`
+# is added so crates can write `#[tokio::test(start_paused = true)]`
+# in their `#[cfg(test)]` modules without redeclaring the feature.
+tokio = { version = "1.40", features = ["full", "test-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 async-trait = "0.1"
