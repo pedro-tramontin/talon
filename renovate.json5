@@ -1,0 +1,169 @@
+// Renovate configuration for Talon.
+//
+// Ported from the existing patterns in comfyui-anime-bootstrap
+// (renovate.json) and vaultenv (renovate.json5). json5 is used so we
+// can add inline rationale comments without forking into a docs page
+// every time the policy changes.
+//
+// Behaviour summary:
+//   - baseBranch: only `main` (matches CI + release-please target).
+//   - dependencyDashboard: true (single Issue summarising open PRs
+//     + the queue).
+//   - automerge: false. All bumps land in a reviewable PR. Rationale
+//     per ecosystem:
+//       * Cargo: a Rust toolchain bump (e.g. tokio 1.41 → 1.42) can
+//         touch MSRV-sensitive code or change runtime behaviour; we
+//         want to look at the diff before merging.
+//       * npm: vite/vitest major bumps (e.g. 5 → 6) are known to
+//         require manual migration; see the "ignore" list below.
+//   - reviewers: [pedro-tramontin] — same as the other repos.
+//   - prHourlyLimit: 2, prConcurrentLimit: 10 — same as comfyui.
+//   - rangeStrategy: "bump" — collapses "1.2.3" → "1.2.4" in
+//     workspace deps instead of expanding to a range.
+//
+// What Renovate covers here:
+//   - Cargo workspace deps (Rust toolchain-aware).
+//   - pnpm workspace deps under /ui (npm + pnpm catalog).
+//   - GitHub Actions versions in .github/workflows/*.yml.
+//   - Grouping: minor/patch updates for "tightly coupled" crates
+//     (e.g. tauri + tauri-build) come as a single PR; majors stay
+//     separate so we can review the breaking change in isolation.
+//
+// Things Renovate does NOT do (intentionally):
+//   - No major-version bumps for vite, vitest. These have required
+//     manual migration in the past (vite 5→6, vitest 2→3) and the
+//     ignore list below keeps them as one-at-a-time PRs we drive
+//     explicitly.
+//   - No "lock file maintenance" schedule — pnpm + cargo handle
+//     their own lock updates, and Renovate's regular dep PRs
+//     already include the lockfile diff.
+
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "baseBranches": [
+    "main"
+  ],
+  "dependencyDashboard": true,
+  "automerge": false,
+  "reviewers": [
+    "pedro-tramontin"
+  ],
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 10,
+  "rangeStrategy": "bump",
+  "rebaseWhen": "conflicted",
+  "labels": [
+    "dependencies"
+  ],
+  // Enablers: tell Renovate which ecosystems to look at. The
+  // default config:recommended already covers npm + cargo, but we
+  // pin rust and github-actions explicitly to make the intent
+  // visible in code review.
+  "rust": {
+    "enabled": true
+  },
+  "github-actions": {
+    "enabled": true
+  },
+  // Grouping rules. Each "packageRules" entry bundles related
+  // dependency updates into a single PR. Without these, a one-line
+  // Cargo.toml change would balloon into 8 PRs (one per bumped
+  // crate), which drowns the signal.
+  "packageRules": [
+    // --- npm / pnpm ecosystem (UI) -------------------------------
+    {
+      "description": "Bundle vite + vitest + esbuild plugin updates — they ship in lockstep and a half-updated toolchain breaks the dev server.",
+      "matchPackagePatterns": [
+        "^vite$",
+        "^vitest$",
+        "^@vitejs/",
+        "^esbuild$"
+      ],
+      "groupName": "vite-stack"
+    },
+    {
+      "description": "Bundle react + react-dom + @types/react + testing-library — the React major migration has been the highest-touch bump in this project.",
+      "matchPackagePatterns": [
+        "^react$",
+        "^react-dom$",
+        "^@types/react$",
+        "^@types/react-dom$",
+        "^@testing-library/"
+      ],
+      "groupName": "react-stack"
+    },
+    {
+      "description": "Bundle eslint + @typescript-eslint — the flat-config migration (eslint 8→9, typescript-eslint 7→8) is the last known noisy transition.",
+      "matchPackagePatterns": [
+        "^eslint$",
+        "^@typescript-eslint/"
+      ],
+      "groupName": "eslint-stack"
+    },
+    {
+      "description": "Bundle tailwindcss + postcss + autoprefixer — Tailwind 4 was a hard migration; the postcss + autoprefixer pair moves with it.",
+      "matchPackagePatterns": [
+        "^postcss$",
+        "^tailwindcss$",
+        "^autoprefixer$",
+        "^@tailwindcss/"
+      ],
+      "groupName": "build-tools"
+    },
+    // --- Cargo ecosystem (workspace) ------------------------------
+    {
+      "description": "Bundle tauri + tauri-build + tauri-* — these move together on every Tauri minor. A split PR would not compile.",
+      "matchPackagePatterns": [
+        "^tauri$",
+        "^tauri-"
+      ],
+      "groupName": "tauri-stack"
+    },
+    {
+      "description": "Bundle tokio + tokio-* + futures + async-trait — the async ecosystem is one logical unit; a partial bump is a compile error.",
+      "matchPackagePatterns": [
+        "^tokio$",
+        "^tokio-",
+        "^futures",
+        "^async-trait$"
+      ],
+      "groupName": "async-stack"
+    },
+    {
+      "description": "Bundle serde + serde_* — versioning is tightly coupled across the workspace.",
+      "matchPackagePatterns": [
+        "^serde$",
+        "^serde_"
+      ],
+      "groupName": "serde-stack"
+    },
+    // --- Major-bump carve-outs -----------------------------------
+    // vite 5→6 and vitest 2→3 were driven as a single manual PR.
+    // Future similar transitions should be explicit, so we suppress
+    // Renovate's automatic major bump for these and let the human
+    // drive the migration.
+    {
+      "description": "vite majors are driven manually (vite 5→6 required a vite-plugin-react compat check).",
+      "matchPackageNames": [
+        "vite"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "vitest majors are driven manually (vitest 2→3 required API changes in api-mocking layer).",
+      "matchPackageNames": [
+        "vitest"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    }
+  ]
+}

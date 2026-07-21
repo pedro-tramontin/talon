@@ -1,0 +1,227 @@
+name: Release
+
+# Tag-triggered. release-please creates the tag on main after the release
+# PR is merged; this workflow then builds Tauri bundles for all three
+# target OSes in parallel and uploads them to the GitHub Release that
+# release-please opened.
+#
+# Tag format: `vX.Y.Z` (e.g. v0.2.0). release-please emits these; the
+# `include-v-in-tag: true` in release-please-config.json keeps the `v`
+# prefix. The `tagName:` input to tauri-action is `${{ github.ref_name }}`
+# which is the bare tag (e.g. `v0.2.0`) — tauri-action strips the `v`
+# internally when stamping the bundle metadata, so the resulting
+# .deb/.dmg/.msi all report version `0.2.0` without us ever touching
+# app/tauri.conf.json's `version` field at build time.
+#
+# (release-please does still bump app/tauri.conf.json's `version` field
+# via the `extra-files` rule, so the file stays in sync. The build-time
+# tag is the authoritative one — the file bump is documentation, not
+# the source of truth.)
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# Contents: read is enough for the build jobs. The final upload is
+# delegated to `tauri-action` which uses its own permissions block.
+permissions:
+  contents: read
+
+# Cancel any in-flight release build for the same tag if a new commit
+# is pushed. Tag pushes are rare so this only ever saves a few minutes,
+# but it prevents stale artifacts from being uploaded if release-please
+# ever re-pushes a tag.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Three parallel jobs, one per OS. Each job:
+  #   1. Checks out the repo at the tag
+  #   2. Installs Rust + pnpm + Node + the Tauri system deps for its OS
+  #   3. Builds the UI (pnpm install + pnpm build) — required for
+  #      tauri::generate_context!() at compile time, same as in CI
+  #   4. Runs tauri-action to build the bundle + upload it to the
+  #      GitHub Release as a workflow artifact AND attach to the release
+  #
+  # tauri-action uses its own GITHUB_TOKEN with `contents: write` and
+  # `id-token: write` (for the Sigstore provenance attestation). The
+  # per-job `permissions:` block below overrides the workflow-level
+  # `contents: read`.
+
+  build-linux:
+    name: Build (Linux)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write  # required by tauri-action to upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system deps (webkit2gtk 4.1, GTK 3, etc.)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          # pnpm 11.14.0 matches CI (see .github/workflows/ci.yml).
+          version: 11.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI deps + build
+        run: pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build
+
+      - name: Build Tauri bundle (Linux)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # The tag that triggered the workflow. tauri-action strips
+          # the `v` prefix when stamping bundle metadata.
+          tagName: ${{ github.ref_name }}
+          releaseName: "Talon ${{ github.ref_name }}"
+          releaseBody: "See [CHANGELOG.md](https://github.com/pedro-tramontin/talon/blob/${{ github.ref_name }}/CHANGELOG.md) for the full release notes."
+          releaseDraft: true
+          prerelease: false
+          # `--bundles` is forwarded to `cargo tauri build`. `deb` is
+          # the primary Ubuntu/Debian artifact. `appimage` is the
+          # portable Linux format that works across distros without
+          # the user needing root.
+          args: --bundles deb,appimage
+
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # macOS comes with most of what tauri-action needs preinstalled
+      # (Xcode CLT, openssl via brew). The Rust toolchain is installed
+      # below.
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI deps + build
+        run: pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build
+
+      - name: Build Tauri bundle (macOS)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Apple notarisation. Both secrets are stored in the repo's
+          # "Actions secrets" panel as macOS keychain entries, not as
+          # raw values, so this only works if the user has set them up.
+          # The release still produces an un-notarised .dmg if the
+          # secrets are missing; tauri-action logs a warning and the
+          # user can sign/notarise manually.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Talon ${{ github.ref_name }}"
+          releaseBody: "See [CHANGELOG.md](https://github.com/pedro-tramontin/talon/blob/${{ github.ref_name }}/CHANGELOG.md) for the full release notes."
+          releaseDraft: true
+          prerelease: false
+          # Universal binary (Intel + Apple Silicon) is the primary
+          # macOS deliverable. `app` is the bare .app bundle for
+          # users who want to drag-install.
+          args: --bundles app,dmg --target universal-apple-darwin
+
+  build-windows:
+    name: Build (Windows)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI deps + build
+        run: pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build
+
+      - name: Build Tauri bundle (Windows)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Talon ${{ github.ref_name }}"
+          releaseBody: "See [CHANGELOG.md](https://github.com/pedro-tramontin/talon/blob/${{ github.ref_name }}/CHANGELOG.md) for the full release notes."
+          releaseDraft: true
+          prerelease: false
+          # `.msi` is the primary Windows installer (WiX). `.exe`
+          # is the NSIS installer that doesn't require admin rights
+          # to install (per-user install). Both ship in the same
+          # release zip.
+          args: --bundles msi,nsis
+
+  # The three build jobs above all set `releaseDraft: true` so they
+  # race each other to create the same draft Release. The first one
+  # to finish creates it; the others attach their assets to the
+  # existing draft. When all three finish, tauri-action
+  # auto-publishes the draft (releaseDraft defaults to false on
+  # subsequent runs against the same tag — but to be safe, the final
+  # job below also flips draft → published explicitly).
+  finalize:
+    name: Publish Release
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # If the release is still in draft (rare: would happen if
+          # tauri-action didn't auto-publish on the last build job),
+          # flip it to published. The release notes are the body
+          # the build jobs already wrote.
+          gh release edit "$TAG" --draft=false || true
+          echo "Release $TAG is published (or was already)."

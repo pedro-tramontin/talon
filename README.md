@@ -47,7 +47,7 @@ For dep-version bumps (Tauri, React, Vite, etc.) and which ones go in which PR, 
 - `pnpm audit --audit-level=moderate` — fails on any JS advisory at moderate severity or above.
 - `cargo deny check advisories` — fails on any Rust advisory (with 18 known upstream-blocked ones in `deny.toml`'s `ignore` list).
 - `make audit-binary` (CI only) — builds the release binary unstripped and scans the symbol table to confirm `dom_query` and `quick-xml` (the two build-time-only DoS-reachable crates) have not leaked into the runtime binary. This is the threat-model guarantee from ADR-0001.
-- Dependabot opens weekly PRs for new npm and cargo versions (see `.github/dependabot.yml`).
+- Renovate opens weekly PRs for new npm, cargo, and GitHub Actions versions (see `renovate.json5`). The previous Dependabot config was retired in 2026-07 in favour of Renovate for richer grouping rules.
 - A quarterly cron (`talon-gtk4-watchdog`) checks the Tauri and `urlpattern` release pages; when a release mentions GTK4 or `unic-*` migration, the user is alerted that the relevant `deny.toml` ignores can be removed.
 
 **Threat-model controls** (in `app/tauri.conf.json`):
