@@ -1,0 +1,26 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "include-component-in-tag": false,
+      "include-v-in-tag": true
+    }
+  },
+  "extra-files": [
+    {
+      "type": "json",
+      "path": "app/tauri.conf.json",
+      "jsonpath": "$.version"
+    },
+    {
+      "type": "json",
+      "path": "ui/package.json",
+      "jsonpath": "$.version"
+    }
+  ]
+}

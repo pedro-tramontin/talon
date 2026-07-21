@@ -75,7 +75,7 @@ We adopt the following supply-chain policy, enforced as a **blocking** CI step (
 
 ### Automated renewals
 
-- **Dependabot** runs weekly on both `npm` and `cargo` ecosystems, opens PRs for new versions, and groups minor/patch updates to limit noise.
+- **Renovate** runs weekly on both `npm` and `cargo` ecosystems (plus GitHub Actions versions), opens PRs for new versions, and groups related minor/patch updates to limit noise. The previous Dependabot config was retired in 2026-07 in favour of Renovate for richer grouping rules.
 
 ### Local enforcement
 
@@ -88,12 +88,12 @@ We adopt the following supply-chain policy, enforced as a **blocking** CI step (
 
 - New vulnerabilities in transitive dependencies fail CI before they can be merged.
 - Upstream-blocked advisories are documented with a known reason and a known fix-path. The moment a fix ships upstream, CI re-surfaces the advisory and we know to update.
-- Weekly Dependabot PRs keep the dep tree current without manual review overhead.
+- Weekly Renovate PRs keep the dep tree current without manual review overhead.
 
 ### Negative
 
 - 18 Rust advisories are currently in the `ignore` list. If we forget to revisit them, they can stay forever. Mitigation: ADR-0001 + the comment-per-entry rule + a quarterly manual review (not automated; ADR-0002 if/when we add it).
-- Dependabot will open PRs on a weekly cadence. We must not let them pile up; the user merges per the project's PR discipline.
+- Renovate will open PRs on a weekly cadence. We must not let them pile up; the user merges per the project's PR discipline.
 - The supply-chain CI job adds ~1-2 minutes to PR feedback.
 
 ## The 18 currently-ignored advisories
