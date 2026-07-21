@@ -35,16 +35,54 @@ import type { ExchangeDetail } from "../types/domain";
 import type { ExchangeBody } from "../types/domain";
 
 /**
- * Decode a `Body::Complete` payload (a JSON byte array on
- * the wire) to a UTF-8 string. Returns `null` if the bytes
- * are not valid UTF-8 — callers use the `null` signal to
- * swap in the binary placeholder. Mirrors
- * `RequestInspector.decodeBodyUtf8`.
+ * Decode a `Body::Complete` payload (a base64 string on the
+ * wire as of v0.5; the v0.1 form was a JSON byte array) to a
+ * `Uint8Array`. The Rust side serializes via
+ * `body_complete_data_serde` (see `crates/bk-core/src/model.rs`)
+ * which uses standard base64 alphabet with `=` padding.
+ *
+ * The deserializer ALSO accepts the legacy `Vec<u8>` array
+ * form (for backwards compat with already-stored SQLite rows
+ * and any test fixture written before the v0.5 fixup). The
+ * detection is by type: if `body.data` is a string, base64-
+ * decode it; if it's an array, treat it as bytes directly.
+ *
+ * Returns `null` if the input is not valid base64 (which
+ * surfaces as a binary body in the UI — the same as the
+ * not-valid-UTF-8 case downstream).
+ */
+function decodeBodyToBytes(body: ExchangeBody): Uint8Array | null {
+  if (body.kind !== "complete") return null;
+  const data = body.data;
+  if (typeof data === "string") {
+    // New v0.5 form: base64 string.
+    if (data.length === 0) return new Uint8Array(0);
+    try {
+      const binary = atob(data);
+      const out = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        out[i] = binary.charCodeAt(i);
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+  // Legacy v0.1 form: `number[]` (each element is a byte 0..=255).
+  if (!Array.isArray(data)) return null;
+  return new Uint8Array(data.slice());
+}
+
+/**
+ * Decode a `Body::Complete` payload to a UTF-8 string.
+ * Returns `null` if the bytes are not valid UTF-8 — callers
+ * use the `null` signal to swap in the binary placeholder.
+ * Mirrors `RequestInspector.decodeBodyUtf8`.
  */
 function decodeBodyUtf8(body: ExchangeBody): string | null {
-  if (body.kind !== "complete") return null;
-  if (body.data.length === 0) return "";
-  const bytes = new Uint8Array(body.data);
+  const bytes = decodeBodyToBytes(body);
+  if (bytes === null) return null;
+  if (bytes.length === 0) return "";
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
@@ -226,6 +264,12 @@ export function InspectorPanel() {
   const cookies = parseCookies(detail.request.headers);
   const requestHeaderEntries = Object.entries(detail.request.headers);
   const contentType = getContentType(detail.request.headers);
+  // The decoded byte length of the body (used by the binary
+  // placeholder and the "No body" check). Computed once
+  // here so the v0.5 base64 wire form doesn't leak into the
+  // UI: callers see bytes, not base64 chars.
+  const bodyBytes = decodeBodyToBytes(detail.request.body);
+  const bodyByteLen = bodyBytes?.length ?? 0;
   const isBinary =
     detail.request.body.kind === "complete" && bodyText === null;
 
@@ -286,7 +330,7 @@ export function InspectorPanel() {
           </span>
         )}
         {detail.request.body.kind === "complete" &&
-          detail.request.body.data.length === 0 && (
+          bodyByteLen === 0 && (
             <span className="italic text-slate-500">No body</span>
           )}
         {isBinary && (
@@ -295,8 +339,7 @@ export function InspectorPanel() {
             className="italic text-slate-500"
           >
             [binary: {contentType ?? "application/octet-stream"},{" "}
-            {formatSize(detail.request.body.data.length)}] (hex viewer
-            is a v0.5 followup)
+            {formatSize(bodyByteLen)}] (hex viewer is a v0.5 followup)
           </span>
         )}
         {bodyText !== null && bodyText.length > 0 && bodyJson !== null && (

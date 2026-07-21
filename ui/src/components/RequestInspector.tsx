@@ -45,15 +45,44 @@ interface Props {
 }
 
 /**
- * Decode a `Body::Complete` payload (a JSON byte array on
- * the wire) to a UTF-8 string. Returns `null` if the bytes
- * are not valid UTF-8 — callers use the `null` signal to
- * swap in the binary placeholder.
+ * Decode a `Body::Complete` payload (a base64 string on the
+ * wire as of v0.5; the v0.1 form was a JSON byte array) to a
+ * `Uint8Array`. Mirrors the helper in
+ * `ui/src/lib/body-decode.ts` (duplicated here for the same
+ * reason `decodeBodyUtf8` is — both `RequestInspector` and
+ * `ResponseInspector` keep a self-contained copy so the
+ * file is reviewable in isolation. If you change the wire
+ * format, change BOTH copies).
+ */
+function decodeBodyToBytes(body: ExchangeBody): Uint8Array | null {
+  if (body.kind !== "complete") return null;
+  const data = body.data;
+  if (typeof data === "string") {
+    if (data.length === 0) return new Uint8Array(0);
+    try {
+      const binary = atob(data);
+      const out = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        out[i] = binary.charCodeAt(i);
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(data)) return null;
+  return new Uint8Array(data.slice());
+}
+
+/**
+ * Decode a `Body::Complete` payload to a UTF-8 string.
+ * Returns `null` if the bytes are not valid UTF-8 — callers
+ * use the `null` signal to swap in the binary placeholder.
  */
 function decodeBodyUtf8(body: ExchangeBody): string | null {
-  if (body.kind !== "complete") return null;
-  if (body.data.length === 0) return "";
-  const bytes = new Uint8Array(body.data);
+  const bytes = decodeBodyToBytes(body);
+  if (bytes === null) return null;
+  if (bytes.length === 0) return "";
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return text;
@@ -97,6 +126,11 @@ export function RequestInspector({ request }: Props) {
   const isBinary = request.body.kind === "complete" && text === null;
   const contentType = getContentType(request.headers);
   const headerEntries = Object.entries(request.headers);
+  // The decoded byte length of the body. Computed once
+  // here so the v0.5 base64 wire form doesn't leak into
+  // the UI: callers see bytes, not base64 chars.
+  const bodyBytes = decodeBodyToBytes(request.body);
+  const bodyByteLen = bodyBytes?.length ?? 0;
 
   return (
     <div
@@ -152,8 +186,8 @@ export function RequestInspector({ request }: Props) {
           >
             {`${request.method} ${request.url} ${request.version}\r\n`}
             {headerEntries.map(([k, v]) => `${k}: ${v}`).join("\r\n")}
-            {request.body.kind === "complete" && request.body.data.length > 0
-              ? `\r\n\r\n${text ?? `[binary: ${contentType ?? "application/octet-stream"}, ${formatSize(request.body.data.length)}]`}`
+            {request.body.kind === "complete" && bodyByteLen > 0
+              ? `\r\n\r\n${text ?? `[binary: ${contentType ?? "application/octet-stream"}, ${formatSize(bodyByteLen)}]`}`
               : ""}
           </pre>
         )}
@@ -192,11 +226,11 @@ export function RequestInspector({ request }: Props) {
               </div>
             )}
             {request.body.kind === "complete" &&
-              request.body.data.length === 0 && (
+              bodyByteLen === 0 && (
                 <div className="mt-2 italic text-slate-500">No body</div>
               )}
             {request.body.kind === "complete" &&
-              request.body.data.length > 0 &&
+              bodyByteLen > 0 &&
               text !== null && (
                 <pre className="mt-2 whitespace-pre-wrap break-all text-slate-200">
                   {text}
@@ -208,8 +242,7 @@ export function RequestInspector({ request }: Props) {
                 className="mt-2 italic text-slate-500"
               >
                 [binary: {contentType ?? "application/octet-stream"},{" "}
-                {formatSize(request.body.data.length)}] (hex viewer is
-                a v0.5 followup)
+                {formatSize(bodyByteLen)}] (hex viewer is a v0.5 followup)
               </div>
             )}
           </div>

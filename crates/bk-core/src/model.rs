@@ -38,16 +38,19 @@ pub use url::Url;
 /// column reads via `Vec<u8>`; we deserialize from `Vec<u8>` for
 /// old rows, and from a base64 string for any new wire path).
 mod body_complete_data_serde {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
     use bytes::Bytes;
-    use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{de::Error as _, Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(data: &Bytes, ser: S) -> Result<S::Ok, S::Error> {
-        // base64::encode (the STANDARD alphabet, with `=` padding)
-        // is the canonical wire form. The test
-        // `body_complete_data_serde_emits_base64_string` pins the
-        // exact shape so a future refactor can't quietly change
-        // to the byte-array form.
-        ser.serialize_str(&base64::encode(data))
+        // base64::engine::general_purpose::STANDARD is the
+        // STANDARD alphabet (the v0.1 wire form's `bytes::Bytes`
+        // default uses the same alphabet). The test
+        // `body_complete_data_serde_emits_base64_string` pins
+        // the exact shape so a future refactor can't quietly
+        // change to URL_SAFE or omit padding.
+        ser.serialize_str(&STANDARD.encode(data))
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Bytes, D::Error> {
@@ -69,7 +72,8 @@ mod body_complete_data_serde {
             Bytes_(Vec<u8>),
         }
         match Either::deserialize(de)? {
-            Either::B64(s) => base64::decode(&s)
+            Either::B64(s) => STANDARD
+                .decode(&s)
                 .map(Bytes::from)
                 .map_err(D::Error::custom),
             Either::Bytes_(v) => Ok(Bytes::from(v)),
