@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/pedro-tramontin/talon/compare/v0.1.1...v0.1.2) (2026-07-21)
+
+
+### Bug Fixes
+
+* **bk-events:** pass tokio runtime handle to fan_in from sync callers ([#57](https://github.com/pedro-tramontin/talon/issues/57)) ([10158d0](https://github.com/pedro-tramontin/talon/commit/10158d0134bb5f7197aba03f6f6d2c2efedf09bd))
+
 ## [0.1.1](https://github.com/pedro-tramontin/talon/compare/v0.1.0...v0.1.1) (2026-07-21)
 
 
