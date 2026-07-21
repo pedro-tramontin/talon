@@ -33,8 +33,10 @@ import type { ExchangeBody } from "../types/domain";
  * case, NOT `null`, so callers can use the byte length to
  * distinguish "no body" from "binary body".
  */
-export function decodeBodyToBytes(body: ExchangeBody): Uint8Array | null {
-  if (body.kind !== "complete") return null;
+export function decodeBodyToBytes(
+  body: ExchangeBody | null | undefined,
+): Uint8Array | null {
+  if (!body || body.kind !== "complete") return null;
   const data = body.data;
   if (typeof data === "string") {
     // New v0.5 form: base64 string.
@@ -70,7 +72,9 @@ export function decodeBodyToBytes(body: ExchangeBody): Uint8Array | null {
  * placeholder. The empty-body case returns `""` (NOT `null`)
  * so the UI's "No body" branch fires correctly.
  */
-export function decodeBodyUtf8(body: ExchangeBody): string | null {
+export function decodeBodyUtf8(
+  body: ExchangeBody | null | undefined,
+): string | null {
   const bytes = decodeBodyToBytes(body);
   if (bytes === null) return null;
   if (bytes.length === 0) return "";
