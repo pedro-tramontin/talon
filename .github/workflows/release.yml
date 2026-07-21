@@ -115,8 +115,19 @@ jobs:
       # macOS comes with most of what tauri-action needs preinstalled
       # (Xcode CLT, openssl via brew). The Rust toolchain is installed
       # below.
+      #
+      # `--target universal-apple-darwin` below requires BOTH the
+      # `aarch64-apple-darwin` AND `x86_64-apple-darwin` Rust targets
+      # to be installed. The macOS runner image (macos-26-arm64) only
+      # includes `aarch64-apple-darwin` by default, so we explicitly
+      # add the Intel target here. Without this, tauri-action's
+      # universal-binary build fails with:
+      #   "Target x86_64-apple-darwin is not installed"
+      # (This was the failure mode on the v0.1.1 first-cut release.)
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
 
       - uses: pnpm/action-setup@v4
