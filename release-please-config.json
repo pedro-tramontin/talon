@@ -1,16 +1,56 @@
 {
   "packages": {
-    ".": {
-      "release-type": "rust",
-      "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "draft": false,
-      "prerelease": false,
-      "include-component-in-tag": false,
-      "include-v-in-tag": true
+    "crates/bk-core": {
+      "component": "bk-core"
+    },
+    "crates/bk-store": {
+      "component": "bk-store"
+    },
+    "crates/bk-engine": {
+      "component": "bk-engine"
+    },
+    "crates/bk-proxy": {
+      "component": "bk-proxy"
+    },
+    "crates/bk-mcp": {
+      "component": "bk-mcp"
+    },
+    "crates/bk-agent": {
+      "component": "bk-agent"
+    },
+    "crates/bk-events": {
+      "component": "bk-events"
+    },
+    "app": {
+      "component": "app"
     }
   },
+  "plugins": [
+    {
+      "type": "cargo-workspace",
+      "merge": false
+    },
+    {
+      "type": "linked-versions",
+      "groupName": "talon",
+      "components": [
+        "bk-core",
+        "bk-store",
+        "bk-engine",
+        "bk-proxy",
+        "bk-mcp",
+        "bk-agent",
+        "bk-events",
+        "app"
+      ]
+    }
+  ],
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
+  "draft": false,
+  "prerelease": false,
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
   "extra-files": [
     {
       "type": "json",
