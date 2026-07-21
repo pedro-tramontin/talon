@@ -8,7 +8,7 @@ The principle: **never mix a dep upgrade with a feature change.** Each dep-bump 
 
 - **Phase 1 (this PR — `phase-01-skeleton`)**: safe minor + major-bumps-that-don't-need-config-changes. See section "Phase 1" below.
 - **Phase 2 (next PR)**: major versions that need config-file or code changes (Tailwind 4 config rewrite, etc.).
-- **Phase 3+**: monitored by Dependabot + the quarterly GTK4/unic watchdog. No manual bumps unless something goes wrong.
+- **Phase 3+**: monitored by Renovate + the quarterly GTK4/unic watchdog. No manual bumps unless something goes wrong.
 
 ## Why split the work
 
@@ -119,13 +119,13 @@ These are major-version bumps that need **config-file or code changes** in the r
 > silences the upstream deprecation warning that GitHub's runners have
 > been printing ("Node 20 is being deprecated").
 
-## Phase 3+ — Dependabot + the watchdog
+## Phase 3+ — Renovate + the watchdog
 
 Once `phase-01-skeleton` lands:
 
-- **Dependabot** (configured in `.github/dependabot.yml`) will open weekly PRs for new npm and cargo versions. Review and merge on cadence.
+- **Renovate** (configured in `renovate.json5` at the repo root) opens weekly PRs for new npm, cargo, and GitHub Actions versions. PRs are grouped by ecosystem cluster (vite-stack, react-stack, tauri-stack, async-stack, serde-stack) so a one-line `Cargo.toml` change is one reviewable PR, not eight. Major-version bumps for `vite` and `vitest` are suppressed so we drive those migrations explicitly (vite 5→6, vitest 2→3 were manual last time). Reviewers: `pedro-tramontin`.
 - **The `talon-gtk4-watchdog` cron** (quarterly) checks the Tauri and `urlpattern` release pages; when a release mentions GTK4 or `unic-*` migration, it alerts. When that fires, we can remove the relevant `ignore` entries from `deny.toml` (per ADR-0001).
-- **No scheduled manual dep sweeps**. Dependabot + the watchdog cover steady-state.
+- **No scheduled manual dep sweeps**. Renovate + the watchdog cover steady-state.
 
 ## What to NOT bundle in a dep PR
 
@@ -157,4 +157,4 @@ And on the PR itself:
 
 - Phase 1 implementation: PR `phase-01-skeleton`, commit message convention `chore(deps): ...`
 - Phase 2: will be opened as a new PR after Phase 1 lands
-- Phase 3: Dependabot will create PRs automatically
+- Phase 3: Renovate will create PRs automatically (see `renovate.json5`)

@@ -1,0 +1,36 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+# Do NOT change this token back to the default GITHUB_TOKEN. release-please
+# uses it to push the v* tag, and the default GITHUB_TOKEN is intentionally
+# blocked by GitHub from triggering downstream workflows. That breaks
+# .github/workflows/release.yml, which is the workflow that actually
+# builds the release bundles. The equivalent bug in vaultenv shipped v0.1.0
+# as a GitHub Release with zero assets.
+#
+# Setup: create a fine-grained PAT scoped to the talon repo with
+# `Contents: Read and write` and `Pull requests: Read and write`, then
+# add it as the `RELEASE_PLEASE_TOKEN` secret in repo Settings. The
+# rationale + the original incident report are documented in
+# docs/release-process.md.
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # v4 is the latest at the time of writing. Bump to v5 if/when
+          # a behaviour change is required (vaultenv uses v4; comfyui uses
+          # v5; the migration would only be worth it for a known fix).
