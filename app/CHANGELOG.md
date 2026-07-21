@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/pedro-tramontin/talon/compare/v0.1.2...v0.1.3) (2026-07-21)
+
+
+### Bug Fixes
+
+* **windows:** set PE subsystem to WINDOWS in release builds ([#59](https://github.com/pedro-tramontin/talon/issues/59)) ([8725cd3](https://github.com/pedro-tramontin/talon/commit/8725cd340dcf5c2943ac5b3e23f16fe0b586db0e))
+
 ## [0.1.2](https://github.com/pedro-tramontin/talon/compare/v0.1.1...v0.1.2) (2026-07-21)
 
 
