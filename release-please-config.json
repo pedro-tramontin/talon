@@ -59,12 +59,12 @@
   "extra-files": [
     {
       "type": "json",
-      "path": "app/tauri.conf.json",
+      "path": "/app/tauri.conf.json",
       "jsonpath": "$.version"
     },
     {
       "type": "json",
-      "path": "ui/package.json",
+      "path": "/ui/package.json",
       "jsonpath": "$.version"
     }
   ]
