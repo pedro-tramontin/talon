@@ -1,7 +1,7 @@
 // §v0.5 HexViewer. Tests the row format (offset, hex,
 // ASCII) and the size cap behavior.
 
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, fireEvent } from "@testing-library/react";
 import { HexViewer } from "../lib/hex-viewer";
 
 describe("HexViewer", () => {

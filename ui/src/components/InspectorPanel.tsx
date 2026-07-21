@@ -198,14 +198,25 @@ function NoSelection() {
 export function InspectorPanel() {
   const selectedId = useExchangeStore((s) => s.selectedId);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
+  // v0.5: read the cached full detail from the exchange
+  // store. The engine populates this cache on each
+  // `ExchangeInserted` event (see `state/exchange.ts`), so
+  // the right-rail renders WITHOUT a `getExchange` round-trip
+  // for any exchange the engine has already announced. The
+  // `getExchange` Tauri command is still the fallback for
+  // cache misses (the engine hasn't pushed the id yet, OR
+  // the LRU evicted it under high-traffic capture).
+  const getCachedDetail = useExchangeStore((s) => s.getDetail);
+  const putCachedDetail = useExchangeStore((s) => s.putDetail);
   const [detail, setDetail] = useState<ExchangeDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Fetch the full detail when the selection (or active
-  // project) changes. Cancels the in-flight request when
-  // the user clicks a new row before the previous one
-  // resolved.
+  // project) changes. v0.5: prefer the cache, fall back to
+  // the `getExchange` Tauri command. Cancels the in-flight
+  // request when the user clicks a new row before the
+  // previous one resolved.
   useEffect(() => {
     if (!selectedId || !activeProjectId) {
       setDetail(null);
@@ -213,12 +224,34 @@ export function InspectorPanel() {
       setLoading(false);
       return;
     }
+    // v0.5 cache-first: the engine populates this cache on
+    // each `ExchangeInserted` event (see `state/exchange.ts`),
+    // so the right-rail renders WITHOUT a `getExchange`
+    // round-trip for any exchange the engine has already
+    // announced. The `getExchange` Tauri command is still
+    // the fallback for cache misses (the engine hasn't
+    // pushed the id yet, OR the LRU evicted it under
+    // high-traffic capture, OR this is a fresh app session
+    // and the cache is cold).
+    const cached = getCachedDetail(selectedId);
+    if (cached) {
+      setDetail(cached);
+      setLoadError(null);
+      setLoading(false);
+      return;
+    }
+    // Cache miss: round-trip to the engine. This is the
+    // path the v0.1 design used for every click; v0.5
+    // demotes it to the cache-miss fallback. The fetched
+    // payload is also written to the cache so the next
+    // selection of the same id is instant.
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
-    getExchange(activeProjectId, selectedId)
+    void getExchange(activeProjectId, selectedId)
       .then((d) => {
         if (cancelled) return;
+        if (d) putCachedDetail(d);
         setDetail(d);
         setLoading(false);
       })
@@ -231,7 +264,7 @@ export function InspectorPanel() {
     return () => {
       cancelled = true;
     };
-  }, [selectedId, activeProjectId]);
+  }, [selectedId, activeProjectId, getCachedDetail, putCachedDetail]);
 
   if (!selectedId) return <NoSelection />;
   if (loading && !detail) {

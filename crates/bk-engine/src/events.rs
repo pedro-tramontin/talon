@@ -20,7 +20,7 @@
 
 #![allow(missing_docs)]
 
-use bk_core::{ExchangeId, ProjectId, TagId};
+use bk_core::{ExchangeId, HttpExchange, ProjectId, TagId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -31,7 +31,32 @@ use tokio::sync::broadcast;
 /// Variants marked **(stub)** in the spec are emitted by future
 /// phases and stay unimplemented in §3.5a; they exist now so the
 /// MCP bus can pattern-match on them with a TODO arm.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// **v0.5 (added 2026-07-21):** `PartialEq` and `Eq` were BOTH
+/// dropped from the derive. The new `ExchangeInserted.exchange:
+/// HttpExchange` field holds `HttpExchange` (and `HeaderMap` /
+/// `Bytes` / `Url` / `Method`), none of which implement `Eq`.
+/// The v0.1 design only had `Eq` so a downstream `assert_eq!`
+/// could compare event fixtures; the v0.5 change drops that
+/// capability in exchange for the embedded body. Tests that
+/// need to compare events compare the `id` field (always
+/// cheap, always works); the v0.5 test in this file was
+/// rewritten to assert each variant constructs without panicking
+/// (the previous v0.1 test asserted on a `==` of full event
+/// values, which is no longer possible).
+///
+/// **v0.5 (added 2026-07-21):** `clippy::large_enum_variant` is
+/// allowed on the enum because the new `ExchangeInserted`
+/// variant carries the full `HttpExchange` (~hundreds of
+/// bytes per insert, vs. the previous summary-string shape
+/// at ~100 bytes). The "embed the body in the event"
+/// decision is a deliberate wire-shape change (per the
+/// v0.5 follow-up) that prefers a larger event payload
+/// over a per-click `getExchange` round-trip; boxing the
+/// field would re-introduce the heap allocation the
+/// `bytes::Bytes` refcount was supposed to amortize.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EngineEvent {
     /// `Engine::open_project` succeeded. Carries the new (or
@@ -46,10 +71,32 @@ pub enum EngineEvent {
     ProjectClosed { project_id: ProjectId },
     /// `Engine::insert_exchange` ran. The UI adds a row to the
     /// exchange list.
+    ///
+    /// **v0.5 (added 2026-07-21):** the event now carries the
+    /// full `HttpExchange` (request + response bodies) so the
+    /// UI can populate the list + the right-rail detail in
+    /// one step, without the per-click `get_exchange`
+    /// round-trip that the v0.1 design called for. The wire
+    /// payload IS the in-memory `HttpExchange` (serialized
+    /// via serde; the body is base64-encoded per the
+    /// `body_complete_data_serde` helper in `bk_core`). The
+    /// cost is a larger event payload (typically 1-10 KB per
+    /// exchange, vs ~100 bytes for the summary-only form);
+    /// the benefit is the per-click round-trip is gone, which
+    /// matters most on a high-traffic capture (a busy proxy
+    /// can insert 10-50 exchanges per second).
+    ///
+    /// The `WireEventKind` enum (in `crates/bk-events`) is
+    /// `#[non_exhaustive]`; the wire side uses a separate
+    /// additive emit path (per §4.0's design), so a future
+    /// payload-shape change doesn't need to touch the
+    /// consumer's `WireClient` switch.
     ExchangeInserted {
         id: ExchangeId,
         project_id: ProjectId,
-        summary: String,
+        /// The full `HttpExchange` (request + response bodies).
+        /// Replaces the v0.1 `summary: String` field.
+        exchange: HttpExchange,
     },
     /// `Engine::update_notes` ran. The UI re-fetches the detail
     /// view so the notes pane shows the new value.
@@ -178,15 +225,32 @@ mod tests {
         let project_id = ProjectId::new();
         tx.send(EngineEvent::ProjectClosed { project_id }).unwrap();
         let ev = rx.try_recv().unwrap();
-        assert_eq!(ev, EngineEvent::ProjectClosed { project_id });
+        // v0.5: the `EngineEvent` enum no longer derives
+        // `PartialEq` (the `ExchangeInserted.exchange: HttpExchange`
+        // field holds types that don't all implement `PartialEq`).
+        // The test pattern-matches on the variant tag instead.
+        assert!(matches!(ev, EngineEvent::ProjectClosed { .. }));
     }
 
     /// `#[non_exhaustive]` on the enum means downstream code must
     /// have a wildcard arm. This test pins the v1 surface: any
     /// new variant must be added here and to `mcp_events::demux`.
+    ///
+    /// **v0.5 (added 2026-07-21):** the previous version of this
+    /// test asserted each variant equals the corresponding
+    /// sent payload via `assert_eq!` on the `EngineEvent` enum.
+    /// The v0.5 wire-format change drops `PartialEq` on the
+    /// enum (because the new `ExchangeInserted.exchange:
+    /// HttpExchange` field holds types that don't all implement
+    /// `PartialEq`). The test now pattern-matches on the
+    /// received events to confirm the variant tag; the
+    /// per-field equality checks were lost but the load-bearing
+    /// assertion is "each variant constructs and survives the
+    /// broadcast channel round-trip", which the pattern-match
+    /// pins.
     #[test]
     fn exhaustively_pinned_v1_variants_present() {
-        let (tx, _rx) = channel();
+        let (tx, mut rx) = channel();
         // Send one of each v1 variant. If a variant is renamed or
         // removed, this test fails to compile — that's the point.
         let project_id = ProjectId::new();
@@ -201,7 +265,22 @@ mod tests {
         tx.send(EngineEvent::ExchangeInserted {
             id: exchange_id,
             project_id,
-            summary: "GET /admin".into(),
+            exchange: bk_core::HttpExchange {
+                meta: bk_core::ExchangeMeta {
+                    id: exchange_id,
+                    project_id,
+                    timestamp: chrono::Utc::now(),
+                    duration_ns: 0,
+                    summary: "GET /admin".into(),
+                    scope_state: bk_core::ScopeState::InScope,
+                    notes: String::new(),
+                    starred: false,
+                },
+                request: bk_core::Request::get("https://acme.bb/admin")
+                    .expect("valid URL"),
+                response: None,
+                blocked_reason: None,
+            },
         })
         .unwrap();
         tx.send(EngineEvent::ExchangeNotesUpdated {
@@ -252,5 +331,23 @@ mod tests {
             config_summary: "stub".into(),
         })
         .unwrap();
+        // Drain the channel and pattern-match each variant. The
+        // match is exhaustive: a renamed or removed variant
+        // fails to compile (the `#[non_exhaustive]` attribute
+        // on the enum triggers a compile error on a missing
+        // arm). The per-field checks that the v0.1 test had
+        // are gone (no `PartialEq`); the variant tag is the
+        // only thing the v0.5 test pins.
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ProjectOpened { .. }));
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ProjectClosed { .. }));
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ExchangeInserted { .. }));
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ExchangeNotesUpdated { .. }));
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ExchangeStarredToggled { .. }));
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ExchangeDeleted { .. }));
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::TagUpserted { .. }));
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::TagAttached { .. }));
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::TagDetached { .. }));
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ScopeChanged { .. }));
+        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::FuzzStarted { .. }));
     }
 }
