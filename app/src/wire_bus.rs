@@ -178,6 +178,18 @@ impl WireEventBus {
             seq_counter,
             cancel.clone(),
             256,
+            // Pass Tauri's internal runtime handle so the
+            // fan-in's 3 forwarder tasks can be spawned
+            // without requiring a Tokio runtime to be in
+            // scope at this call site. `start()` is a sync
+            // function invoked from Tauri's `setup` closure
+            // on the main thread; before this fix,
+            // `JoinSet::spawn` panicked with "there is no
+            // reactor running". `tauri::async_runtime::handle()`
+            // returns the global Tauri runtime's handle, and
+            // `.inner()` exposes it as a `&tokio::runtime::Handle`
+            // that `JoinSet::spawn_on` accepts.
+            tauri::async_runtime::handle().inner(),
         );
         // Emit task: recv from sink, re-emit to the Webview.
         let app_for_emit = app.clone();
