@@ -68,6 +68,13 @@ chrono = { version = "0.4", features = ["serde"] }
 http = "1.1"
 url = { version = "2.5", features = ["serde"] }
 bytes = { version = "1.7", features = ["serde"] }
+# v0.5: serialize `bytes::Bytes` as a base64 string instead of a JSON
+# array of numbers. The `bytes` feature produces `serialize_bytes`
+# (rendered by serde_json as `[104,101,108,108,111,...]`), which is
+# correct but verbose and 3-4× the wire size. The v0.5 fixup drops
+# the JS-side base64 conversion (`parseExchange` in `ui/src/api.ts`)
+# and lets serde produce the base64 string directly.
+serde_bytes_base64 = "0.1"
 
 # Regex
 regex = "1.10"

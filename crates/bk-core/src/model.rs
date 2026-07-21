@@ -13,6 +13,70 @@ use std::fmt;
 pub use http::{Method, Version};
 pub use url::Url;
 
+/// Serde helper that serializes a `bytes::Bytes` field as a
+/// base64-encoded string instead of `bytes::Bytes`'s default
+/// `serialize_bytes` (which serde_json renders as a JSON array of
+/// numbers, e.g. `[104,101,108,108,111]` for "hello").
+///
+/// The v0.5 fixup (replaces the v0.1 JS-side `parseExchange` base64
+/// conversion in `ui/src/api.ts`) lets serde produce the base64
+/// string directly, which is:
+/// - **3-4× more compact on the wire** (each byte becomes ~1.4
+///   base64 chars vs. 1-3 decimal digits + 1 comma + 1 space);
+/// - **1 less conversion point** to debug (the wire shape IS the
+///   in-memory shape);
+/// - **backwards-compatible with the in-memory representation** —
+///   `bytes::Bytes` is still the in-memory type (zero-copy,
+///   refcounted, the right primitive for buffers). Only the wire
+///   shape changes.
+///
+/// The `Visitor::visit_string` arm is included so a JSON producer
+/// that emits a string `"AQID..."` deserializes correctly. The
+/// `visit_bytes` and `visit_byte_buf` arms accept the legacy
+/// `Vec<u8>` wire form for backwards compatibility with already-
+/// stored exchanges in the SQLite database (the `body_data` BLOB
+/// column reads via `Vec<u8>`; we deserialize from `Vec<u8>` for
+/// old rows, and from a base64 string for any new wire path).
+mod body_complete_data_serde {
+    use bytes::Bytes;
+    use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(data: &Bytes, ser: S) -> Result<S::Ok, S::Error> {
+        // base64::encode (the STANDARD alphabet, with `=` padding)
+        // is the canonical wire form. The test
+        // `body_complete_data_serde_emits_base64_string` pins the
+        // exact shape so a future refactor can't quietly change
+        // to the byte-array form.
+        ser.serialize_str(&base64::encode(data))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Bytes, D::Error> {
+        // The Body is held inside an HttpExchange which is itself
+        // serialized to JSON for the Tauri IPC bridge and to
+        // a custom SQLite row format for storage. The SQLite
+        // path uses `Vec<u8>` (via rusqlite's BLOB); the Tauri
+        // path uses JSON. Both need to work.
+        //
+        // We use an untagged enum to accept either form:
+        // - a base64 string (the new wire form, produced by `serialize`)
+        // - a byte array (the legacy `Vec<u8>` form, for backward compat
+        //   with rows already in the SQLite store and with any test
+        //   fixture that was written before this fixup)
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            B64(String),
+            Bytes_(Vec<u8>),
+        }
+        match Either::deserialize(de)? {
+            Either::B64(s) => base64::decode(&s)
+                .map(Bytes::from)
+                .map_err(D::Error::custom),
+            Either::Bytes_(v) => Ok(Bytes::from(v)),
+        }
+    }
+}
+
 // Re-export the http crate's HeaderMap type. We give it a type alias
 // so downstream code can swap implementations later if we ever need to
 // (e.g., add a redaction layer). For now, it's just `http::HeaderMap`.
@@ -164,11 +228,25 @@ mod header_map_serde {
 ///
 /// For Phase 2 we only need `Complete`. `Streaming` is here so Phase 3
 /// can introduce it without a breaking change to the storage schema.
+///
+/// **v0.5 wire format (added 2026-07-21):** `Complete.data` is serialized
+/// as a base64 string (via the `body_complete_data_serde` helper
+/// module) instead of `bytes::Bytes`'s default JSON array-of-numbers
+/// form. The in-memory type is still `bytes::Bytes` (zero-copy,
+/// refcounted — the right primitive for in-process buffers). Only the
+/// wire shape changes. The deserializer accepts both forms
+/// (base64 string AND legacy `Vec<u8>` array) so already-stored
+/// SQLite rows continue to round-trip.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Body {
-    Complete { data: Bytes },
-    Streaming { content_length: Option<u64> },
+    Complete {
+        #[serde(with = "body_complete_data_serde")]
+        data: Bytes,
+    },
+    Streaming {
+        content_length: Option<u64>,
+    },
     Empty,
 }
 
@@ -375,6 +453,83 @@ mod tests {
         assert_eq!(back.meta.id, exchange.meta.id);
         assert_eq!(back.meta.summary, "GET https://acme.bb/login");
         assert!(back.response.is_some());
+    }
+
+    /// v0.5 fixup: the `Body::Complete.data` field is serialized
+    /// as a base64 string, not as a JSON array of numbers. The
+    /// wire form is a string (e.g. `"aGVsbG8="` for "hello"), not
+    /// an array (e.g. `[104,101,108,108,111]`). The test pins the
+    /// exact shape so a future refactor can't quietly change it.
+    #[test]
+    fn body_complete_data_serde_emits_base64_string() {
+        let body = Body::Complete {
+            data: Bytes::from_static(b"hello"),
+        };
+        let s = serde_json::to_string(&body).unwrap();
+        // "hello" = 5 bytes; base64 is ceil(5/3)*4 = 8 chars.
+        // We check the substring is present, not the exact JSON
+        // shape, so the test survives serde_json's whitespace
+        // variation across versions.
+        assert!(
+            s.contains(r#""data":"aGVsbG8=""#),
+            "Body::Complete.data must serialize as a base64 string; \
+             got {s} (the v0.5 contract: a base64 string, NOT a JSON array of numbers)"
+        );
+    }
+
+    /// v0.5 fixup: the deserializer accepts BOTH the new base64
+    /// string form AND the legacy `Vec<u8>` array form. The
+    /// legacy form is what the SQLite store contains for
+    /// already-inserted exchanges (the `body_data` BLOB column
+    /// reads as `Vec<u8>`). The v0.5 fixup keeps those rows
+    /// round-tripping without a migration.
+    #[test]
+    fn body_complete_data_serde_accepts_legacy_byte_array() {
+        // Legacy wire form: JSON array of numbers (what
+        // `bytes::Bytes` produces by default with the `serde` feature).
+        let legacy_json = r#"{"kind":"complete","data":[104,101,108,108,111]}"#;
+        let body: Body = serde_json::from_str(legacy_json).expect("legacy form deserializes");
+        match body {
+            Body::Complete { data } => {
+                assert_eq!(&data[..], b"hello", "legacy bytes must round-trip");
+            }
+            _ => panic!("expected Body::Complete, got {body:?}"),
+        }
+    }
+
+    /// v0.5 fixup: the deserializer accepts the new base64
+    /// string form (what the v0.5 wire shape produces).
+    #[test]
+    fn body_complete_data_serde_accepts_base64_string() {
+        let new_json = r#"{"kind":"complete","data":"aGVsbG8="}"#;
+        let body: Body = serde_json::from_str(new_json).expect("base64 form deserializes");
+        match body {
+            Body::Complete { data } => {
+                assert_eq!(&data[..], b"hello", "base64 must round-trip");
+            }
+            _ => panic!("expected Body::Complete, got {body:?}"),
+        }
+    }
+
+    /// v0.5 fixup: round-trip a `HttpExchange` with a non-empty
+    /// `Body::Complete` through serde_json, asserting the bytes
+    /// survive. (The existing `exchange_serializes_to_json_and_back`
+    /// test covers the happy path; this one explicitly tests
+    /// the v0.5 wire format on a multi-byte body.)
+    #[test]
+    fn body_complete_data_serde_roundtrips_multi_byte_body() {
+        let original = Bytes::from_static(b"the quick brown fox jumps over the lazy dog");
+        let body = Body::Complete {
+            data: original.clone(),
+        };
+        let s = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&s).unwrap();
+        match back {
+            Body::Complete { data } => {
+                assert_eq!(data, original, "multi-byte body must round-trip");
+            }
+            _ => panic!("expected Body::Complete, got {back:?}"),
+        }
     }
 
     #[test]
