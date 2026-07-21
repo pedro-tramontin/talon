@@ -205,6 +205,26 @@ git push origin :refs/tags/v0.2.0
 gh workflow run release-please.yml
 ```
 
+### 4.2a `Error creating Pull Request: Resource not accessible by personal access token`
+
+This was the failure mode on the FIFTH release-please run for talon (2026-07-21 15:00 UTC, run 29841900230, **5m22s** — the long duration is the tell that release-please did real work and then died at the final push). The workflow log shows release-please successfully built the release branch `release-please--branches--main` and tried to push it, but the API call to `POST /repos/pedro-tramontin/talon/git/refs` returned 403.
+
+**Root cause:** the `RELEASE_PLEASE_TOKEN` PAT doesn't have `Contents: write` permission. release-please uses this scope to push the release branch and create the tag. The PAT was likely created with only `Pull requests: write` (or as a fine-grained PAT where the "Contents" permission defaulted to "No access").
+
+**Fix:** update the PAT in https://github.com/settings/tokens (or https://github.com/settings/personal-access-tokens for fine-grained):
+- **Fine-grained:** Edit the PAT → Repository access = `pedro-tramontin/talon` only → Permissions → "Contents" = "Read and write" + "Pull requests" = "Read and write" + "Metadata" = "Read-only" (required)
+- **Classic:** Can't edit scopes — must regenerate. Ensure `repo` (or `public_repo` + `workflow`) scope is selected, plus any other scopes you originally needed.
+
+After rotation, update the secret value in repo Settings → Secrets and variables → Actions. Then trigger a re-run:
+
+```bash
+gh run rerun 29841900230 --failed
+```
+
+(Or, equivalently, push a no-op commit to main and let the next release-please run pick it up.)
+
+**Verification:** the next run should successfully open a release PR titled "chore(main): release 0.X.Y" listing the 8 crate version bumps + the tauri.conf.json + ui/package.json bumps + a CHANGELOG.md regeneration. The PR will be open, draft, and ready for review.
+
 ### 4.3 One OS build fails but the others succeed
 
 `release.yml` is `fail-fast: false` in spirit — each OS job is independent and uploads its assets to the same draft Release as they finish. So if, say, the macOS build fails (e.g. signing cert expired), you get a Release with the Linux .deb + Windows .msi but no .dmg.
