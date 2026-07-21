@@ -6,5 +6,5 @@
   "crates/bk-mcp": "0.1.1",
   "crates/bk-agent": "0.1.1",
   "crates/bk-events": "0.1.2",
-  "app": "0.1.2"
+  "app": "0.1.3"
 }
