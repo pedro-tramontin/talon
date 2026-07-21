@@ -31,8 +31,7 @@ import { useEffect, useState } from "react";
 import { getExchange } from "../api";
 import { useExchangeStore } from "../state/exchange";
 import { useProjectStore } from "../state/project";
-import type { ExchangeDetail } from "../types/domain";
-import type { ExchangeBody } from "../types/domain";
+import type { ExchangeDetail, ExchangeBody } from "../types/domain";
 
 /**
  * Decode a `Body::Complete` payload (a base64 string on the

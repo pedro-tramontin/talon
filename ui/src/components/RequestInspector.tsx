@@ -30,6 +30,7 @@
 
 import { useState } from "react";
 import type { ExchangeBody, ExchangeRequest } from "../types/domain";
+import { HexViewer } from "../lib/hex-viewer";
 
 /** Sub-tab identifier. */
 type View = "pretty" | "headers" | "raw";
@@ -237,12 +238,16 @@ export function RequestInspector({ request }: Props) {
                 </pre>
               )}
             {isBinary && (
-              <div
-                data-testid="request-inspector-binary"
-                className="mt-2 italic text-slate-500"
-              >
-                [binary: {contentType ?? "application/octet-stream"},{" "}
-                {formatSize(bodyByteLen)}] (hex viewer is a v0.5 followup)
+              <div data-testid="request-inspector-binary" className="mt-2">
+                <HexViewer
+                  bytes={bodyBytes ?? new Uint8Array(0)}
+                  rowCap={4096}
+                />
+                {contentType && (
+                  <div className="mt-1 italic text-slate-500">
+                    mime: {contentType} ({formatSize(bodyByteLen)})
+                  </div>
+                )}
               </div>
             )}
           </div>

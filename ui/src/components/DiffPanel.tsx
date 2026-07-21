@@ -44,13 +44,37 @@ import { useProjectStore } from "../state/project";
 import type { ExchangeBody, ExchangeDetail } from "../types/domain";
 import type { ExchangeId } from "../types/ids";
 
+/** Decode a `Body::Complete` payload to a `Uint8Array`.
+ * Mirrors the helper in `ui/src/lib/body-decode.ts`
+ * (duplicated here to keep the file self-contained —
+ * see the `RequestInspector` copy for the rationale). */
+function decodeBodyToBytes(body: ExchangeBody): Uint8Array | null {
+  if (body.kind !== "complete") return null;
+  const data = body.data;
+  if (typeof data === "string") {
+    if (data.length === 0) return new Uint8Array(0);
+    try {
+      const binary = atob(data);
+      const out = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        out[i] = binary.charCodeAt(i);
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(data)) return null;
+  return new Uint8Array(data.slice());
+}
+
 /** Decode a `Body::Complete` payload to a UTF-8 string.
  * Returns `null` if the bytes are not valid UTF-8.
  * Mirrors `InspectorPanel.decodeBodyUtf8`. */
 function decodeBodyUtf8(body: ExchangeBody): string | null {
-  if (body.kind !== "complete") return null;
-  if (body.data.length === 0) return "";
-  const bytes = new Uint8Array(body.data);
+  const bytes = decodeBodyToBytes(body);
+  if (bytes === null) return null;
+  if (bytes.length === 0) return "";
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
@@ -216,10 +240,12 @@ export function DiffPanel() {
     // the placeholder has the right size + content-type.
     const binarySide = aText === null ? previousDetail : currentDetail;
     const body = binarySide.response?.body;
+    const bodyBytes = body ? decodeBodyToBytes(body) : null;
     if (body?.kind === "complete") {
       const ct = Object.entries(
         currentDetail.response.headers,
       ).find(([k]) => k.toLowerCase() === "content-type")?.[1];
+      const size = bodyBytes?.length ?? 0;
       return (
         <div
           data-testid="diff-panel-binary"
@@ -228,7 +254,7 @@ export function DiffPanel() {
           <p className="text-slate-500">
             Response body is binary ({" "}
             {ct?.split(";")[0]?.trim() ?? "application/octet-stream"},{" "}
-            {body.data.length} B). Hex diff is a v0.5 followup.
+            {size} B). Hex diff is a v0.5 followup.
           </p>
         </div>
       );
@@ -246,13 +272,15 @@ export function DiffPanel() {
   const aLines = aText.split("\n");
   const bLines = bText.split("\n");
   const max = Math.max(aLines.length, bLines.length);
+  // Use the decoded byte length (not the wire-form data.length,
+  // which is the base64 char count in the v0.5 wire form).
   const aLength =
     previousDetail.response.body.kind === "complete"
-      ? previousDetail.response.body.data.length
+      ? decodeBodyToBytes(previousDetail.response.body)?.length ?? 0
       : 0;
   const bLength =
     currentDetail.response.body.kind === "complete"
-      ? currentDetail.response.body.data.length
+      ? decodeBodyToBytes(currentDetail.response.body)?.length ?? 0
       : 0;
 
   return (
