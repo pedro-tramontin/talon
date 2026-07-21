@@ -1,28 +1,37 @@
 {
+  "release-type": "rust",
   "packages": {
     "crates/bk-core": {
-      "component": "bk-core"
+      "component": "bk-core",
+      "release-type": "rust"
     },
     "crates/bk-store": {
-      "component": "bk-store"
+      "component": "bk-store",
+      "release-type": "rust"
     },
     "crates/bk-engine": {
-      "component": "bk-engine"
+      "component": "bk-engine",
+      "release-type": "rust"
     },
     "crates/bk-proxy": {
-      "component": "bk-proxy"
+      "component": "bk-proxy",
+      "release-type": "rust"
     },
     "crates/bk-mcp": {
-      "component": "bk-mcp"
+      "component": "bk-mcp",
+      "release-type": "rust"
     },
     "crates/bk-agent": {
-      "component": "bk-agent"
+      "component": "bk-agent",
+      "release-type": "rust"
     },
     "crates/bk-events": {
-      "component": "bk-events"
+      "component": "bk-events",
+      "release-type": "rust"
     },
     "app": {
-      "component": "app"
+      "component": "app",
+      "release-type": "rust"
     }
   },
   "plugins": [
