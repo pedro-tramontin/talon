@@ -14,11 +14,90 @@
 // actually need multi-route navigation (the v0.1 UI is
 // single-window — `/capture`, `/replay`, `/fuzz` all map to
 // the same Tauri window for now).
+//
+// **v0.5 (added 2026-07-21):** the Capture route mounts the
+// `engine_event` wire-bus handler that powers the
+// `ExchangeInserted` → `unshiftExchange` + `putDetail`
+// pipeline. The engine's wire payload is the FULL
+// `HttpExchange` (per the v0.5 `ExchangeInserted.exchange`
+// field), so we populate both the thin `ExchangeSummary`
+// list and the full `ExchangeDetail` cache from the same
+// event. The right-rail reads from the cache; per-click
+// `getExchange` round-trips are eliminated for any
+// exchange the engine has already announced.
 
+import { useEffect } from "react";
 import { useProjectStore } from "../state/project";
+import { exchangeStore } from "../state/exchange";
+import { getWireClient } from "../lib/ws";
 import { ExchangeDetail } from "../components/ExchangeDetail";
 import { ExchangeList } from "../components/ExchangeList";
 import { RightRail } from "../components/RightRail";
+import type {
+  ExchangeDetail as ExchangeDetailType,
+  ExchangeSummary,
+} from "../types/domain";
+import type { ExchangeId, ProjectId } from "../types/ids";
+
+/**
+ * Subscribe to the wire bus's `engine_event` channel and
+ * dispatch by event kind. The handler is registered once
+ * per `Capture` mount (the v0.5 change) — the previous v0.1
+ * design didn't subscribe at all (the UI read `listExchanges`
+ * once on project open and never re-synced). The handler
+ * is the entry point for both the row-list prepending
+ * (`unshiftExchange`) and the detail-cache insertion
+ * (`putDetail`), per the v0.5 cache-first detail view.
+ */
+function useEngineEventHandler() {
+  useEffect(() => {
+    const client = getWireClient();
+    const unsub = client.subscribe("engine_event", (payload) => {
+      // v0.5 narrowing: the wire event's `payload` is the
+      // serialized `EngineEvent` JSON. The Rust side uses
+      // serde_json internally; the field names match the
+      // Rust `serde(rename_all = "snake_case")` convention
+      // because the engine's `EngineEvent` doesn't have a
+      // top-level `#[serde(rename_all)]` attribute but the
+      // VARIANTS have `#[serde(rename_all = "snake_case")]`
+      // so the `kind` discriminator is the variant's name
+      // in snake_case.
+      const p = payload as {
+        kind?: string;
+        id?: ExchangeId;
+        project_id?: ProjectId;
+        summary?: string;
+        exchange?: ExchangeDetailType;
+      };
+      if (p.kind !== "exchange_inserted") return;
+      // The summary path. v0.5 has the engine emit the
+      // full exchange, but the list view still shows just
+      // the summary line. We derive it from the `exchange`'s
+      // `meta.summary` (canonical source).
+      const exchange = p.exchange;
+      if (!exchange) return;
+      const summary: ExchangeSummary = {
+        id: exchange.meta.id,
+        project_id: exchange.meta.project_id,
+        timestamp: exchange.meta.timestamp,
+        duration_ns: exchange.meta.duration_ns,
+        summary: exchange.meta.summary,
+        scope_state: exchange.meta.scope_state,
+        notes: exchange.meta.notes,
+        starred: exchange.meta.starred,
+      };
+      // The summary path. v0.5 has the engine emit the
+      // full exchange, so the list view's `exchanges` array
+      // gets the row AND the detail cache gets the full body
+      // in one step. (v0.1 only got a summary string; the
+      // right-rail then called `getExchange` to fetch the
+      // full body. v0.5 eliminates that round-trip.)
+      exchangeStore.getState().unshiftExchange(summary);
+      exchangeStore.getState().putDetail(exchange);
+    });
+    return unsub;
+  }, []);
+}
 
 /** Width of the left rail in px. Pinned at 240 to match the
  * Tailwind `w-60` class. The Capture.test.tsx test asserts
@@ -130,6 +209,12 @@ function CaptureRightRail() {
  * Capture route. The 3-column layout for Phase 4 Part A.
  */
 export function Capture() {
+  // v0.5: mount the wire-bus handler that powers the
+  // `ExchangeInserted` → `unshiftExchange` + `putDetail`
+  // pipeline. The hook has no return value; its sole
+  // purpose is the side effect of subscribing on mount
+  // and unsubscribing on unmount.
+  useEngineEventHandler();
   return (
     <div className="flex h-full w-full flex-col">
       <header

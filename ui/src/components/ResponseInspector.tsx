@@ -20,6 +20,7 @@
 
 import { useState } from "react";
 import type { ExchangeBody, ExchangeResponse } from "../types/domain";
+import { HexViewer } from "../lib/hex-viewer";
 
 type View = "pretty" | "headers" | "raw";
 
@@ -30,15 +31,46 @@ interface Props {
 }
 
 /**
- * Decode a `Body::Complete` payload (a JSON byte array on
- * the wire) to a UTF-8 string. Returns `null` if the bytes
- * are not valid UTF-8 — callers use the `null` signal to
- * swap in the binary placeholder.
+ * Decode a `Body::Complete` payload (a base64 string on the
+ * wire as of v0.5; the v0.1 form was a JSON byte array) to a
+ * `Uint8Array`. Mirrors the helper in
+ * `ui/src/lib/body-decode.ts` (duplicated here for the same
+ * reason `decodeBodyUtf8` is — see the `RequestInspector`
+ * copy for the rationale).
+ */
+function decodeBodyToBytes(body: ExchangeBody): Uint8Array | null {
+  if (body.kind !== "complete") return null;
+  const data = body.data;
+  if (typeof data === "string") {
+    if (data.length === 0) return new Uint8Array(0);
+    try {
+      const binary = atob(data);
+      const out = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        out[i] = binary.charCodeAt(i);
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(data)) return null;
+  // Coerce `readonly number[]` to a plain `number[]` (a copy).
+  // `Uint8Array` accepts `ArrayLike<number>`, but the readonly
+  // modifier trips the type checker; the slice() produces a
+  // mutable copy that satisfies both.
+  return new Uint8Array(data.slice());
+}
+
+/**
+ * Decode a `Body::Complete` payload to a UTF-8 string.
+ * Returns `null` if the bytes are not valid UTF-8 — callers
+ * use the `null` signal to swap in the binary placeholder.
  */
 function decodeBodyUtf8(body: ExchangeBody): string | null {
-  if (body.kind !== "complete") return null;
-  if (body.data.length === 0) return "";
-  const bytes = new Uint8Array(body.data);
+  const bytes = decodeBodyToBytes(body);
+  if (bytes === null) return null;
+  if (bytes.length === 0) return "";
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return text;
@@ -84,6 +116,11 @@ export function ResponseInspector({ response }: Props) {
   const contentType = getContentType(response.headers);
   const headerEntries = Object.entries(response.headers);
   const colorClass = statusColor(response.status);
+  // The decoded byte length of the body. Computed once
+  // here so the v0.5 base64 wire form doesn't leak into
+  // the UI: callers see bytes, not base64 chars.
+  const bodyBytes = decodeBodyToBytes(response.body);
+  const bodyByteLen = bodyBytes?.length ?? 0;
 
   return (
     <div
@@ -148,8 +185,8 @@ export function ResponseInspector({ response }: Props) {
           >
             {`${response.version} ${response.status} ${response.status_text}\r\n`}
             {headerEntries.map(([k, v]) => `${k}: ${v}`).join("\r\n")}
-            {response.body.kind === "complete" && response.body.data.length > 0
-              ? `\r\n\r\n${text ?? `[binary: ${contentType ?? "application/octet-stream"}, ${formatSize(response.body.data.length)}]`}`
+            {response.body.kind === "complete" && bodyByteLen > 0
+              ? `\r\n\r\n${text ?? `[binary: ${contentType ?? "application/octet-stream"}, ${formatSize(bodyByteLen)}]`}`
               : ""}
           </pre>
         )}
@@ -188,24 +225,27 @@ export function ResponseInspector({ response }: Props) {
               </div>
             )}
             {response.body.kind === "complete" &&
-              response.body.data.length === 0 && (
+              bodyByteLen === 0 && (
                 <div className="mt-2 italic text-slate-500">No body</div>
               )}
             {response.body.kind === "complete" &&
-              response.body.data.length > 0 &&
+              bodyByteLen > 0 &&
               text !== null && (
                 <pre className="mt-2 whitespace-pre-wrap break-all text-slate-200">
                   {text}
                 </pre>
               )}
             {isBinary && (
-              <div
-                data-testid="response-inspector-binary"
-                className="mt-2 italic text-slate-500"
-              >
-                [binary: {contentType ?? "application/octet-stream"},{" "}
-                {formatSize(response.body.data.length)}] (hex viewer is
-                a v0.5 followup)
+              <div data-testid="response-inspector-binary" className="mt-2">
+                <HexViewer
+                  bytes={bodyBytes ?? new Uint8Array(0)}
+                  rowCap={4096}
+                />
+                {contentType && (
+                  <div className="mt-1 italic text-slate-500">
+                    mime: {contentType} ({formatSize(bodyByteLen)})
+                  </div>
+                )}
               </div>
             )}
           </div>

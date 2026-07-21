@@ -11,11 +11,20 @@
 // selections survive a tab re-render. The `scrollPosition`
 // field is the saved scroll-offset; the §4.5 PR reads it on
 // mount to restore position after a detail-view round-trip.
+//
+// **v0.5 (added 2026-07-21):** a second internal map,
+// `details`, caches the FULL `HttpExchange` per id. The
+// v0.5 wire payload (an `engine_event` with the
+// `ExchangeInserted.exchange` field) carries the full body
+// inline so the right-rail detail view can render from
+// the cache without a per-click `get_exchange` round-trip.
+// The cache is bounded by an LRU (default: 500 entries) so
+// a long-running session doesn't OOM the React renderer.
 
 import { createStore, useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { StoreApi } from "zustand/vanilla";
-import type { ExchangeSummary } from "../types/domain";
+import type { ExchangeDetail, ExchangeSummary } from "../types/domain";
 import type { ExchangeId } from "../types/ids";
 
 /** Filter state for the exchange list. v0.1 ships all four
@@ -39,6 +48,16 @@ const EMPTY_FILTER: ExchangeFilter = {
   tag: "",
 };
 
+/** Max number of `ExchangeDetail` payloads the in-memory
+ * cache holds. At ~50 KB per detail (the upper end of a
+ * typical JSON-encoded exchange), 500 entries is ~25 MB —
+ * within the v0.1 desktop app's memory budget. The LRU
+ * evicts the oldest-touched entry when the cap is hit.
+ * v0.5 follow-up: when the list is paged (the v0.5+ design
+ * ships pagination), the cache bounds scale with the
+ * visible page size, not the total list size. */
+const DETAILS_CACHE_CAP = 500;
+
 /** Top-level store shape. */
 export type ExchangeStore = {
   /** The full list (or a window of it). §4.5 replaces with
@@ -50,6 +69,15 @@ export type ExchangeStore = {
   filter: ExchangeFilter;
   /** Last-known scroll position (px). §4.5 restores on mount. */
   scrollPosition: number;
+  /** v0.5: in-memory cache of `ExchangeDetail` payloads
+   * (the full request/response bodies). Keyed by id. The
+   * right-rail reads from this cache on click; the engine
+   * populates it on each `ExchangeInserted` event. */
+  details: Map<ExchangeId, ExchangeDetail>;
+  /** v0.5: the LRU order of `details` accesses. The most
+   * recently accessed id is at the end; the least is at the
+   * front (the eviction target). */
+  detailsLru: ExchangeId[];
 
   /** Replace the whole list. */
   setExchanges: (exchanges: ExchangeSummary[]) => void;
@@ -66,14 +94,28 @@ export type ExchangeStore = {
   setSelectedId: (id: ExchangeId | null) => void;
   /** Save the scroll position (called on scroll). */
   setScrollPosition: (pos: number) => void;
+  /** v0.5: read the cached full detail for an id. Returns
+   * `undefined` if the id is not in the cache (the engine
+   * hasn't pushed it yet, or the LRU evicted it). The
+   * right-rail uses this as the primary read path; the
+   * `getExchange` Tauri command is the fallback when the
+   * cache misses. */
+  getDetail: (id: ExchangeId) => ExchangeDetail | undefined;
+  /** v0.5: insert a full detail into the cache. Called
+   * from the wire-bus handler when an `ExchangeInserted`
+   * event lands (and from the detail-fetch fallback when
+   * the cache misses). Touches the LRU. */
+  putDetail: (detail: ExchangeDetail) => void;
 };
 
 function createExchangeStore() {
-  return createStore<ExchangeStore>((set) => ({
+  return createStore<ExchangeStore>((set, get) => ({
     exchanges: [],
     selectedId: null,
     filter: { ...EMPTY_FILTER },
     scrollPosition: 0,
+    details: new Map(),
+    detailsLru: [],
 
     setExchanges(exchanges) {
       set({ exchanges });
@@ -95,7 +137,14 @@ function createExchangeStore() {
         // selected, so the detail view doesn't render stale
         // data.
         const selectedId = state.selectedId === id ? null : state.selectedId;
-        return { exchanges, selectedId };
+        // v0.5: also drop the cached detail so the LRU
+        // doesn't retain a dead id. The next `getDetail(id)`
+        // would return `undefined` and the right-rail would
+        // fetch fresh from the engine.
+        const details = new Map(state.details);
+        details.delete(id);
+        const detailsLru = state.detailsLru.filter((x) => x !== id);
+        return { exchanges, selectedId, details, detailsLru };
       });
     },
 
@@ -104,7 +153,18 @@ function createExchangeStore() {
         const exchanges = state.exchanges.map((e) =>
           e.id === id ? { ...e, notes } : e,
         );
-        return { exchanges };
+        // v0.5: also update the cached detail's notes so
+        // the right-rail sees the new value without a
+        // round-trip. The body/headers/etc. are unchanged.
+        const details = new Map(state.details);
+        const cached = details.get(id);
+        if (cached) {
+          details.set(id, {
+            ...cached,
+            meta: { ...cached.meta, notes },
+          });
+        }
+        return { exchanges, details };
       });
     },
 
@@ -120,6 +180,48 @@ function createExchangeStore() {
 
     setScrollPosition(pos) {
       set({ scrollPosition: pos });
+    },
+
+    getDetail(id) {
+      const state = get();
+      const detail = state.details.get(id);
+      if (!detail) return undefined;
+      // Touch the LRU: move the id to the end. We do this
+      // on every read (so the most-recently-touched id is
+      // always at the tail). The set() call updates the
+      // `detailsLru` array; the `details` Map is unchanged
+      // (the id was already in it).
+      const lru = state.detailsLru.filter((x) => x !== id);
+      lru.push(id);
+      set({ detailsLru: lru });
+      return detail;
+    },
+
+    putDetail(detail) {
+      set((state) => {
+        const id = detail.meta.id;
+        const details = new Map(state.details);
+        details.set(id, detail);
+        // Touch the LRU: move the id to the end. If the id
+        // is already in the LRU, remove the older occurrence
+        // first.
+        let lru = state.detailsLru.filter((x) => x !== id);
+        lru.push(id);
+        // Evict the oldest entry if the cap is exceeded. The
+        // cap is checked AFTER the insert so a single insert
+        // can grow the cache to cap+1 before the eviction
+        // runs; the next insert then evicts one. (The
+        // alternative — checking before the insert — would
+        // give a hard cap of cap-1, which is not what we
+        // want.)
+        if (lru.length > DETAILS_CACHE_CAP) {
+          const evicted = lru.shift();
+          if (evicted !== undefined) {
+            details.delete(evicted);
+          }
+        }
+        return { details, detailsLru: lru };
+      });
     },
   }));
 }

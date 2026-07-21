@@ -1,16 +1,40 @@
-// Modal dialog for write-tool confirmation. In v0.1 the "type
-// DELETE" hard-confirm for `talon_delete_exchange` is hard-coded
-// and NOT disableable; future phases may add a "dangerous tools"
-// allowlist in settings to skip the second prompt.
+// Modal dialog for write-tool confirmation. The v0.1
+// hard-coded "type DELETE" hard-confirm is for tools in
+// `DESTRUCTIVE_TOOLS` below. The set is hand-maintained
+// (NOT disableable in v0.1); future phases may add a
+// "dangerous tools" allowlist in settings to skip the
+// second prompt.
 //
 // The dialog calls `respondConfirm` from the agent store; the
 // store clears the pending confirmation optimistically and forwards
 // the choice to the Rust side.
+//
+// ## v0.5 lockstep note
+//
+// This set is the UI-side mirror of the Rust-side
+// `app/src/agent.rs::WRITE_TOOLS`. The two MUST stay in sync:
+// a tool in `bk_mcp`'s registry that is destructive but missing
+// from either set will either:
+//   - skip the "type DELETE" prompt (if missing from THIS set,
+//     but present in `WRITE_TOOLS`); or
+//   - never trigger the confirm dialog at all (if missing from
+//     `WRITE_TOOLS`).
+//
+// The Rust side has a `write_tools_covers_talon_delete_exchange`
+// lockstep test that fails the moment a new destructive tool
+// is added to `bk_mcp` without a corresponding entry there. This
+// file's `DESTRUCTIVE_TOOLS` does NOT have an automated
+// guard — keep it in lockstep manually (and add a test if
+// you add a second entry).
 
 import { useState } from "react";
 import { useAgentStore } from "../state/agent";
 
-/** Tool names that require the hard-coded "type DELETE" second confirm. */
+/**
+ * Tool names that require the hard-coded "type DELETE" second
+ * confirm. Mirrors `app/src/agent.rs::WRITE_TOOLS` (see the
+ * lockstep note at the top of the file).
+ */
 const DESTRUCTIVE_TOOLS: ReadonlySet<string> = new Set([
   "talon_delete_exchange",
 ]);

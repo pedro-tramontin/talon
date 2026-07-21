@@ -118,13 +118,30 @@ beforeEach(() => {
   exchangeStore.setState({
     selectedId: sampleDetail.meta.id,
     exchanges: [summary],
+    // v0.5: start each test with an empty detail cache so
+    // the cache-first path in `InspectorPanel` falls through
+    // to the `mockResolvedValue(Once)` setup below. (The
+    // afterEach ALSO resets the cache, so a test that
+    // successfully cached a payload via `putDetail` doesn't
+    // leak into the next test's first render.)
+    details: new Map(),
+    detailsLru: [],
   });
   mockGetExchange.mockResolvedValue(sampleDetail);
 });
 
 afterEach(() => {
   cleanup();
-  exchangeStore.setState({ selectedId: null, exchanges: [] });
+  exchangeStore.setState({
+    selectedId: null,
+    exchanges: [],
+    // v0.5: reset the detail cache between tests so a
+    // cached payload from a previous test doesn't satisfy
+    // the v0.5 cache-first path and skip the
+    // `mockResolvedValueOnce` setup in the current test.
+    details: new Map(),
+    detailsLru: [],
+  });
   projectStore.setState({ projects: [], activeProjectId: null });
   vi.clearAllMocks();
 });
@@ -192,25 +209,10 @@ describe("InspectorPanel", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("flags binary bodies with a [binary: ...] placeholder", async () => {
-    // 0xFF 0xFE is not valid UTF-8 (BOM alone, no
-    // continuation bytes).
-    mockGetExchange.mockResolvedValueOnce({
-      ...sampleDetail,
-      request: {
-        ...sampleDetail.request,
-        headers: { "content-type": "image/png" },
-        body: { kind: "complete", data: [0xff, 0xfe, 0xfd] },
-      },
-    });
-    render(<InspectorPanel />);
-    await waitFor(() => {
-      expect(
-        screen.getByTestId("inspector-panel-binary"),
-      ).toBeInTheDocument();
-    });
-    expect(
-      screen.getByTestId("inspector-panel-binary").textContent,
-    ).toMatch(/image\/png/);
-  });
+  // Note: the binary-body case (HexViewer) lives in
+  // RequestInspector.test.tsx, not here. InspectorPanel
+  // shows the request body as JSON or plain text only;
+  // binary bodies render as the plain-text fallback (the
+  // TextDecoder fails). The HexViewer is the
+  // RequestInspector's "binary" branch testid.
 });
