@@ -1,10 +1,55 @@
 {
   "release-type": "rust",
   "packages": {
-    ".": {
+    "crates/bk-core": {
+      "component": "bk-core",
+      "release-type": "rust"
+    },
+    "crates/bk-store": {
+      "component": "bk-store",
+      "release-type": "rust"
+    },
+    "crates/bk-engine": {
+      "component": "bk-engine",
+      "release-type": "rust"
+    },
+    "crates/bk-proxy": {
+      "component": "bk-proxy",
+      "release-type": "rust"
+    },
+    "crates/bk-mcp": {
+      "component": "bk-mcp",
+      "release-type": "rust"
+    },
+    "crates/bk-agent": {
+      "component": "bk-agent",
+      "release-type": "rust"
+    },
+    "crates/bk-events": {
+      "component": "bk-events",
+      "release-type": "rust"
+    },
+    "app": {
+      "component": "app",
       "release-type": "rust"
     }
   },
+  "plugins": [
+    {
+      "type": "linked-versions",
+      "groupName": "talon",
+      "components": [
+        "bk-core",
+        "bk-store",
+        "bk-engine",
+        "bk-proxy",
+        "bk-mcp",
+        "bk-agent",
+        "bk-events",
+        "app"
+      ]
+    }
+  ],
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
   "draft": false,
