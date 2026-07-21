@@ -48,9 +48,22 @@
 //! seq counter is `Arc<AtomicU64>` so all three tasks advance
 //! the SAME counter — the seq is process-global, not per-source.
 //!
-//! `fan_in` spawns 3 tokio tasks and returns a [`FanInHandle`]
-//! that the caller can `await` (for cancellation) or `abort` to
-//! stop the tasks.
+//! `fan_in` spawns 3 tokio tasks on a runtime [`Handle`] passed
+//! by the caller and returns a [`FanInHandle`] that the caller
+//! can `await` (for cancellation) or `abort` to stop the tasks.
+//!
+//! The handle is passed explicitly so the helper does not
+//! require a Tokio runtime to be **in scope** at the call
+//! site. Without this, callers from synchronous contexts
+//! (Tauri's `setup` closure, the main thread at startup, etc.)
+//! would panic with "there is no reactor running, must be
+//! called from the context of a Tokio 1.x runtime" — which is
+//! exactly what bit us in v0.1.1 on the Windows binary.
+//! Production callers get a handle from
+//! `tauri::async_runtime::handle().inner()`; tests get one
+//! from `tokio::runtime::Handle::current()` (the
+//! `#[tokio::test]` macro installs a runtime as the current
+//! one).
 //!
 //! ## Why 3 source `Value` receivers (not generic over the
 //! source event type)
@@ -148,6 +161,7 @@ pub fn fan_in(
     seq_counter: Arc<AtomicU64>,
     cancellation_token: tokio_util::sync::CancellationToken,
     sink_capacity: usize,
+    handle: &tokio::runtime::Handle,
 ) -> FanInHandle {
     let mut tasks: JoinSet<()> = JoinSet::new();
 
@@ -157,52 +171,61 @@ pub fn fan_in(
     let sink_e = sink.clone();
     let seq_e = seq_counter.clone();
     let token_e = cancellation_token.clone();
-    tasks.spawn(async move {
-        forward_loop(
-            engine_rx,
-            WireEventKind::EngineEvent,
-            sink_e,
-            seq_e,
-            token_e,
-            "engine",
-            sink_capacity,
-        )
-        .await;
-    });
+    tasks.spawn_on(
+        async move {
+            forward_loop(
+                engine_rx,
+                WireEventKind::EngineEvent,
+                sink_e,
+                seq_e,
+                token_e,
+                "engine",
+                sink_capacity,
+            )
+            .await;
+        },
+        handle,
+    );
 
     // The agent task: same shape, `kind: AgentEvent`.
     let sink_a = sink.clone();
     let seq_a = seq_counter.clone();
     let token_a = cancellation_token.clone();
-    tasks.spawn(async move {
-        forward_loop(
-            agent_rx,
-            WireEventKind::AgentEvent,
-            sink_a,
-            seq_a,
-            token_a,
-            "agent",
-            sink_capacity,
-        )
-        .await;
-    });
+    tasks.spawn_on(
+        async move {
+            forward_loop(
+                agent_rx,
+                WireEventKind::AgentEvent,
+                sink_a,
+                seq_a,
+                token_a,
+                "agent",
+                sink_capacity,
+            )
+            .await;
+        },
+        handle,
+    );
 
     // The proxy task: same shape, `kind: ProxyEvent`.
     let sink_p = sink;
     let seq_p = seq_counter;
     let token_p = cancellation_token;
-    tasks.spawn(async move {
-        forward_loop(
-            proxy_rx,
-            WireEventKind::ProxyEvent,
-            sink_p,
-            seq_p,
-            token_p,
-            "proxy",
-            sink_capacity,
-        )
-        .await;
-    });
+    tasks.spawn_on(
+        async move {
+            forward_loop(
+                proxy_rx,
+                WireEventKind::ProxyEvent,
+                sink_p,
+                seq_p,
+                token_p,
+                "proxy",
+                sink_capacity,
+            )
+            .await;
+        },
+        handle,
+    );
 
     FanInHandle { tasks }
 }
@@ -355,6 +378,7 @@ mod tests {
             seq.clone(),
             token.clone(),
             sink_capacity,
+            &tokio::runtime::Handle::current(),
         );
         (engine_tx, agent_tx, proxy_tx, sink_rx, seq, token, handle)
     }
@@ -534,6 +558,7 @@ mod tests {
             seq.clone(),
             token.clone(),
             4,
+            &tokio::runtime::Handle::current(),
         );
         // Give the fan-in a tick to subscribe to its
         // sources.
@@ -699,5 +724,98 @@ mod tests {
         drop(engine_tx);
         drop(agent_tx);
         drop(proxy_tx);
+    }
+
+    /// **Regression test for v0.1.1 (Windows binary panic).**
+    ///
+    /// On Windows the binary panicked at startup with
+    /// "there is no reactor running, must be called from the
+    /// context of a Tokio 1.x runtime" because `fan_in()` was
+    /// called from `WireEventBus::start` — a synchronous
+    /// function invoked from Tauri's `setup` closure on the
+    /// main thread, with no Tokio runtime in scope. The
+    /// production fix is to require the caller to pass a
+    /// `&tokio::runtime::Handle`, which `fan_in()` then uses
+    /// via `JoinSet::spawn_on`.
+    ///
+    /// This test reproduces the production scenario: a
+    /// **plain `#[test]`** (no `#[tokio::test]` — i.e. no
+    /// current runtime in scope) that calls `fan_in()` with
+    /// a `Handle` obtained from a separately-constructed
+    /// `Runtime`. Before the fix this would panic inside
+    /// `JoinSet::spawn`; after the fix it succeeds and the
+    /// spawned tasks run on the constructed runtime.
+    #[test]
+    fn fan_in_works_from_sync_context_without_current_runtime() {
+        // Sanity check: the test thread must NOT have a
+        // current runtime. (If it did, the regression test
+        // would be vacuous — `JoinSet::spawn` would succeed
+        // for the wrong reason.)
+        assert!(
+            tokio::runtime::Handle::try_current().is_err(),
+            "test premise violated: a Tokio runtime is in scope on this thread; \
+             this test must run in a sync context with no current runtime"
+        );
+
+        // Build a separate runtime just to get a handle.
+        // We don't drive any futures on it — we only need
+        // the handle so `fan_in` can spawn onto it.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build test runtime");
+        let handle = runtime.handle().clone();
+
+        // Build the bus inputs.
+        let (engine_tx, engine_rx) = broadcast::channel::<Value>(16);
+        let (_agent_tx, agent_rx) = broadcast::channel::<Value>(16);
+        let (proxy_tx, proxy_rx) = broadcast::channel::<Value>(16);
+        let (sink_tx, _sink_rx) = broadcast::channel::<WireEvent>(16);
+        let seq = Arc::new(AtomicU64::new(0));
+        let token = tokio_util::sync::CancellationToken::new();
+
+        // The call site: a sync function with no current
+        // runtime. Before the fix, this panicked.
+        let _fan_in_handle = fan_in(
+            engine_rx,
+            agent_rx,
+            proxy_rx,
+            sink_tx,
+            seq.clone(),
+            token.clone(),
+            16,
+            &handle,
+        );
+
+        // Drive the runtime a tick so the spawned tasks
+        // subscribe to their sources, then send one event
+        // and verify the seq counter advances — proving the
+        // tasks actually ran (not just spawned and
+        // immediately aborted).
+        runtime.block_on(async {
+            // Give the tasks a moment to subscribe.
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            engine_tx
+                .send(json!({"src": "engine", "i": 0}))
+                .expect("engine send");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        });
+        assert_eq!(
+            seq.load(Ordering::Relaxed),
+            1,
+            "fan-in task must have stamped seq=1 for the one event we sent"
+        );
+
+        // Cancel and let the tasks exit. Dropping the
+        // senders closes the source channels so the forwarder
+        // tasks see `RecvError::Closed` and return.
+        token.cancel();
+        drop(engine_tx);
+        drop(proxy_tx);
+        // Drain any remaining tasks to avoid a panic on
+        // `runtime` drop while tasks are still pending.
+        runtime.block_on(async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        });
     }
 }
