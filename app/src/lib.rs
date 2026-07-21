@@ -1,14 +1,25 @@
 //! Tauri app entry. The actual UI is in `ui/`. The Rust side exposes
 //! commands (typed IPC handlers) to the webview.
 //!
-//! The `lib` form (rather than putting everything in `main.rs`) is the
-//! Tauri 2 convention: it lets the same `run()` function be called from
-//! desktop, iOS, and Android entry points without duplicating setup.
-
-#![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
+//! The `lib` form (rather than putting everything in a single
+//! binary `main.rs`) is the Tauri 2 convention: it lets the
+//! same `run()` function be called from per-target entry
+//! points without duplicating setup. Today the only
+//! per-target entry is `src/bin/desktop.rs` (Windows, macOS,
+//! Linux). When iOS / Android support lands, Tauri's
+//! `cargo tauri ios init` / `cargo tauri android init`
+//! generate the platform entry from the
+//! `#[cfg_attr(mobile, tauri::mobile_entry_point)]` attribute
+//! on `run()` below.
+//!
+//! ## Windows subsystem
+//!
+//! The `windows_subsystem = "windows"` attribute that
+//! suppresses the console window on double-click launch
+//! lives on `src/bin/desktop.rs`, NOT here. The linker
+//! reads the subsystem flag from the binary's own crate, so
+//! an attribute on the library crate is silently ignored.
+//! (See `bin/desktop.rs` for the full rationale.)
 
 mod agent;
 mod commands;
