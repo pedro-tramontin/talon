@@ -153,6 +153,14 @@ impl Drop for FanInHandle {
 /// subscribers on the sink see `RecvError::Lagged` and
 /// the seq gap is the React side's signal to surface a
 /// "missed events" banner.
+///
+/// The 8-parameter signature is above clippy's default
+/// threshold of 7, but every call site passes the same
+/// 8 values (3 sources, sink, seq, cancel, capacity, runtime
+/// handle). A builder or args struct would add boilerplate
+/// without clarifying intent, so the lint is allowed at the
+/// function level rather than at the call sites.
+#[allow(clippy::too_many_arguments)]
 pub fn fan_in(
     engine_rx: broadcast::Receiver<Value>,
     agent_rx: broadcast::Receiver<Value>,
