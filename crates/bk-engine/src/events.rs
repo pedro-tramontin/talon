@@ -160,12 +160,25 @@ pub enum EngineEvent {
 }
 
 /// The handle the engine hands out to subscribers. The capacity
-/// (256) is the same as the `broadcast::channel` default; this is
-/// fine for the Tauri UI and the MCP server (both consume events
-/// fast). Slow consumers (a misbehaving MCP client that pauses its
-/// read loop) will see `RecvError::Lagged` and should resubscribe
-/// or skip.
+/// is `EVENT_BUS_CAPACITY` (1024); the previous value of 256 was
+/// fine for the summary-only `EngineEvent` (each event ~100 B),
+/// but the v0.5 change to embed the full `HttpExchange` in
+/// `ExchangeInserted` (~1-10 KB per event) increased the
+/// in-flight memory by ~40-100x. At 50 exchanges/sec the ring
+/// now holds 50-500 KB of bodies instead of 5 KB; raising the
+/// cap to 1024 gives the WebView + MCP consumers ~20 sec of
+/// headroom on a busy proxy instead of ~5 sec. Slow consumers
+/// still see `RecvError::Lagged` and should resubscribe or
+/// skip; the wire_bus logs a `warn!` and emits a synthetic
+/// `EngineResync` `WireEvent` so the UI can re-fetch state.
 pub type EventReceiver = broadcast::Receiver<EngineEvent>;
+
+/// The bus capacity used by `channel()`. See `EventReceiver`'s
+/// docstring for the sizing rationale. 1024 is a conservative
+/// default that gives the UI time to render a frame between
+/// insert bursts; if a future workload needs more headroom,
+/// raise this and update the `EVENT_BUS_CAPACITY_*` tests.
+pub const EVENT_BUS_CAPACITY: usize = 1024;
 
 /// The sender side, owned by the `Engine`. Cloning the sender is
 /// cheap (`broadcast::Sender` is internally `Arc`-wrapped), so the
@@ -177,13 +190,16 @@ pub type EventSender = broadcast::Sender<EngineEvent>;
 /// constructor stores the sender and exposes `subscribe_events()`
 /// which returns a fresh `EventReceiver`.
 ///
-/// Capacity note: 256 is the `tokio::sync::broadcast` default and
-/// matches what the rest of the Rust ecosystem uses for "UI event
-/// bus" patterns. If a future test or production code path needs
-/// more headroom, raise this; if the lag is acceptable at lower
-/// counts, lower it.
+/// Capacity note: `EVENT_BUS_CAPACITY` is the per-receiver ring
+/// size. The `tokio::sync::broadcast` API has no global "drop
+/// oldest" semantic — each receiver's `Lag(n)` count is
+/// independent — so this value is a per-consumer upper bound on
+/// how many events can be queued before the slowest consumer
+/// starts dropping. 1024 is sized for the v0.5 wire shape
+/// (1-10 KB per `ExchangeInserted`); see `EventReceiver`'s
+/// docstring for the reasoning.
 pub fn channel() -> (EventSender, EventReceiver) {
-    broadcast::channel(256)
+    broadcast::channel(EVENT_BUS_CAPACITY)
 }
 
 #[cfg(test)]
@@ -276,8 +292,7 @@ mod tests {
                     notes: String::new(),
                     starred: false,
                 },
-                request: bk_core::Request::get("https://acme.bb/admin")
-                    .expect("valid URL"),
+                request: bk_core::Request::get("https://acme.bb/admin").expect("valid URL"),
                 response: None,
                 blocked_reason: None,
             },
@@ -338,16 +353,175 @@ mod tests {
         // arm). The per-field checks that the v0.1 test had
         // are gone (no `PartialEq`); the variant tag is the
         // only thing the v0.5 test pins.
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ProjectOpened { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ProjectClosed { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ExchangeInserted { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ExchangeNotesUpdated { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ExchangeStarredToggled { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ExchangeDeleted { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::TagUpserted { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::TagAttached { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::TagDetached { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::ScopeChanged { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), EngineEvent::FuzzStarted { .. }));
+        //
+        // **v0.5 review (2026-07-21):** the per-field equality
+        // checks were lost when `PartialEq` was dropped from
+        // `EngineEvent` (the new `ExchangeInserted.exchange:
+        // HttpExchange` field holds types that don't all
+        // implement `PartialEq`). This v0.5.1 patch restores
+        // the per-field checks for the variants that don't
+        // carry the new field by binding the destructured
+        // fields and asserting on them — the exchange-inserted
+        // variant gets a partial check (id + project_id only;
+        // the body field is too complex to assert on directly
+        // and is covered by the `bk_core` round-trip tests).
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::ProjectOpened {
+                project_id: pid,
+                db_filename: db,
+            } => {
+                assert_eq!(pid, project_id);
+                assert_eq!(db, "acme.db");
+            }
+            _ => panic!("expected ProjectOpened, got {received:?}"),
+        }
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::ProjectClosed { project_id: pid } => {
+                assert_eq!(pid, project_id);
+            }
+            _ => panic!("expected ProjectClosed, got {received:?}"),
+        }
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::ExchangeInserted {
+                id: eid,
+                project_id: pid,
+                exchange,
+            } => {
+                assert_eq!(eid, exchange_id);
+                assert_eq!(pid, project_id);
+                // Spot-check the embedded body field's
+                // summary (the only easily-equatable string
+                // on the HttpExchange without implementing
+                // PartialEq on the whole tree).
+                assert_eq!(exchange.meta.summary, "GET /admin");
+                assert_eq!(exchange.meta.id, exchange_id);
+            }
+            _ => panic!("expected ExchangeInserted, got {received:?}"),
+        }
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::ExchangeNotesUpdated {
+                id: eid,
+                project_id: pid,
+            } => {
+                assert_eq!(eid, exchange_id);
+                assert_eq!(pid, project_id);
+            }
+            _ => panic!("expected ExchangeNotesUpdated, got {received:?}"),
+        }
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::ExchangeStarredToggled {
+                id: eid,
+                project_id: pid,
+                starred: s,
+            } => {
+                assert_eq!(eid, exchange_id);
+                assert_eq!(pid, project_id);
+                assert!(s);
+            }
+            _ => panic!("expected ExchangeStarredToggled, got {received:?}"),
+        }
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::ExchangeDeleted {
+                id: eid,
+                project_id: pid,
+            } => {
+                assert_eq!(eid, exchange_id);
+                assert_eq!(pid, project_id);
+            }
+            _ => panic!("expected ExchangeDeleted, got {received:?}"),
+        }
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::TagUpserted {
+                id: tid,
+                project_id: pid,
+                name: n,
+            } => {
+                assert_eq!(tid, tag_id);
+                assert_eq!(pid, project_id);
+                assert_eq!(n, "vuln");
+            }
+            _ => panic!("expected TagUpserted, got {received:?}"),
+        }
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::TagAttached {
+                tag_id: tid,
+                exchange_id: eid,
+                project_id: pid,
+            } => {
+                assert_eq!(tid, tag_id);
+                assert_eq!(eid, exchange_id);
+                assert_eq!(pid, project_id);
+            }
+            _ => panic!("expected TagAttached, got {received:?}"),
+        }
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::TagDetached {
+                tag_id: tid,
+                exchange_id: eid,
+                project_id: pid,
+            } => {
+                assert_eq!(tid, tag_id);
+                assert_eq!(eid, exchange_id);
+                assert_eq!(pid, project_id);
+            }
+            _ => panic!("expected TagDetached, got {received:?}"),
+        }
+        // Stubs — they're v1 enum variants even if the engine
+        // doesn't emit them yet. The MCP bus demux pattern-matches
+        // on them with a "not yet implemented" arm.
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::ScopeChanged {
+                project_id: pid,
+                rule_count: rc,
+            } => {
+                assert_eq!(pid, project_id);
+                assert_eq!(rc, 0);
+            }
+            _ => panic!("expected ScopeChanged, got {received:?}"),
+        }
+        let received = rx.try_recv().unwrap();
+        match received {
+            EngineEvent::FuzzStarted {
+                job_id: jid,
+                project_id: pid,
+                config_summary: cs,
+            } => {
+                assert_eq!(jid, "stub");
+                assert_eq!(pid, project_id);
+                assert_eq!(cs, "stub");
+            }
+            _ => panic!("expected FuzzStarted, got {received:?}"),
+        }
+    }
+
+    /// `channel()` uses `EVENT_BUS_CAPACITY`. The constant
+    /// value is part of the v0.5 wire contract (raised from
+    /// 256 to 1024 when `ExchangeInserted` started embedding
+    /// the full `HttpExchange`); a regression here would
+    /// re-introduce the silent-lag risk on busy proxies.
+    #[test]
+    fn channel_uses_documented_capacity() {
+        assert_eq!(
+            EVENT_BUS_CAPACITY, 1024,
+            "EVENT_BUS_CAPACITY must be 1024 (the v0.5 contract)"
+        );
+        // Round-trip: send+receive one event to confirm the
+        // channel is wired correctly.
+        let (tx, mut rx) = channel();
+        tx.send(EngineEvent::ProjectClosed {
+            project_id: ProjectId::new(),
+        })
+        .unwrap();
+        assert!(rx.try_recv().is_ok());
     }
 }

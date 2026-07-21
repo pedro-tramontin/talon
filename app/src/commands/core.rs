@@ -123,15 +123,19 @@ pub struct ExchangeListPage {
 ///    and an empty value would cascade into a confusing engine
 ///    error deep in the §3.3.5 connection pool path.
 /// 2. **Host shape** (`is_valid_host_shape(&target_host)`) — the
-///    target_host must look like a hostname (RFC 1123 labels
-///    separated by dots, max 253 chars) or an IPv4/IPv6 literal
-///    (`[::1]:8080` style ports are NOT accepted; the v1
-///    convention is host-only with the proxy's default port).
-///    This is the v0.5 fixup that closes the §4.1 spec gap —
-///    the spec called for "validate" but the implementation
-///    only checked non-empty. Phase 6's scope rules match
-///    against `target_host` and would fail confusingly on
-///    malformed input.
+///    target_host must look like an RFC 1123 hostname (labels
+///    separated by dots, max 253 chars) or an IPv4 literal.
+///    IPv6 literals are NOT accepted in v0.5 (the IPC check
+///    rejects `:` as a URL/port separator; see
+///    `is_valid_host_shape` for the reasoning and the
+///    "future v0.5+ follow-up" path for IPv6 scope support).
+///    URL-style ports (`foo:8080`), paths, queries, and
+///    fragments are rejected. This is the v0.5 fixup that
+///    closes the §4.1 spec gap — the spec called for
+///    "validate" but the implementation only checked
+///    non-empty. Phase 6's scope rules match against
+///    `target_host` and would fail confusingly on malformed
+///    input.
 ///
 /// The `name` and `target_host` are the project identity (the §3.5c
 /// convention — the engine creates a fresh project under the
@@ -150,8 +154,8 @@ pub async fn open_project(
     }
     if !is_valid_host_shape(&target_host) {
         return Err(format!(
-            "target_host {target_host:?} is not a valid hostname or IP literal \
-             (expected RFC 1123 hostname or IPv4/IPv6; \
+            "target_host {target_host:?} is not a valid hostname or IPv4 literal \
+             (expected RFC 1123 hostname or IPv4; \
              got {} chars after trim)",
             target_host.trim().len()
         ));
@@ -176,14 +180,22 @@ pub async fn open_project(
 ///
 /// - **IPv4 literal**: four dotted decimal octets, each 0..=255.
 ///   No leading zeros (e.g. `010.0.0.1` is rejected).
-/// - **IPv6 literal**: any of the standard IPv6 forms. The check
-///   is intentionally loose — the engine's URL parser is the
-///   authoritative validator; we only reject strings that
-///   contain characters that no IPv6 representation can use.
 /// - **Hostname**: 1..=253 chars, each label 1..=63 chars, labels
 ///   contain `[A-Za-z0-9-]` and don't start or end with `-`,
 ///   labels separated by `.`. Underscore is rejected (DNS
 ///   forbids it; some resolvers silently allow it; we don't).
+///
+/// **Not accepted (intentionally):**
+/// - **IPv6 literal** (`::1`, `fe80::1`, `2001:db8::1`): the
+///   implementation rejects `:` as a URL/port separator (see
+///   the early-return on `c == ':'` below). IPv6 support is
+///   **not** in v0.5's spec for `target_host`; the engine's
+///   URL parser is the authoritative validator for any future
+///   IPv6 support, and the v0.5 IPC validation is deliberately
+///   restricted to hostnames + IPv4 to keep the Tauri-boundary
+///   check cheap and predictable. A v0.5+ follow-up can add
+///   IPv6 brackets (`[::1]`) parsing if/when scope rules
+///   (§6) need to match against IPv6 targets.
 ///
 /// The check is NOT a security boundary — the engine's URL
 /// parser is the real validator (a hostname that passes this
@@ -261,9 +273,7 @@ fn is_valid_hostname(s: &str) -> bool {
         if label.starts_with('-') || label.ends_with('-') {
             return false;
         }
-        label
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
     })
 }
 
@@ -580,21 +590,21 @@ mod tests {
         // implementation would silently accept and then the
         // engine would error confusingly on first proxy use.
         for host in [
-            "",                    // empty (already covered above but pinned here too)
-            "not a hostname",      // embedded whitespace
-            "foo\tbar",            // tab
-            "acme.bb:8080",        // URL-style port
-            "http://acme.bb",      // full URL
-            "acme.bb/",            // trailing slash
-            "acme.bb#frag",        // fragment
-            "acme.bb?query=1",     // query
-            "-leading-dash",       // label starts with `-`
-            "trailing-dash-",      // label ends with `-`
-            "under_score.host",    // underscore (DNS forbids)
-            "010.0.0.1",           // IPv4 with leading zero
-            "256.0.0.1",           // IPv4 octet > 255
-            "1.2.3",               // IPv4 with only 3 octets
-            &"a".repeat(254),      // 254 chars > 253 limit
+            "",                 // empty (already covered above but pinned here too)
+            "not a hostname",   // embedded whitespace
+            "foo\tbar",         // tab
+            "acme.bb:8080",     // URL-style port
+            "http://acme.bb",   // full URL
+            "acme.bb/",         // trailing slash
+            "acme.bb#frag",     // fragment
+            "acme.bb?query=1",  // query
+            "-leading-dash",    // label starts with `-`
+            "trailing-dash-",   // label ends with `-`
+            "under_score.host", // underscore (DNS forbids)
+            "010.0.0.1",        // IPv4 with leading zero
+            "256.0.0.1",        // IPv4 octet > 255
+            "1.2.3",            // IPv4 with only 3 octets
+            &"a".repeat(254),   // 254 chars > 253 limit
         ] {
             assert!(
                 !is_valid_host_shape(host),

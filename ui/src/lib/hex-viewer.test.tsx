@@ -79,9 +79,38 @@ describe("HexViewer", () => {
     expect(copyButton).toBeTruthy();
   });
 
-  it("does NOT show the truncated message when rowCap is not set", () => {
+  it("applies the DEFAULT_ROW_CAP (4096) when rowCap is not passed", () => {
+    // 64 KiB + 16 bytes = 4097 rows — one past the default cap.
+    // Without the default, this would render all 4097 rows
+    // and OOM the test renderer for larger bodies.
+    const bytes = new Uint8Array(64 * 1024 + 16);
+    const { container } = render(<HexViewer bytes={bytes} />);
+    const rows = container.querySelectorAll('[data-testid="hex-viewer-row"]');
+    // Exactly 4096 rows, not 4097.
+    expect(rows.length).toBe(4096);
+    // Truncated message + copy button appear (the default
+    // cap was hit; the user can copy the full hex).
+    expect(container.textContent).toContain("truncated");
+    expect(container.textContent).toContain("4,097"); // totalRows
+    expect(container.textContent).toContain("4,096"); // shown rows
+  });
+
+  it("does NOT show the truncated message for a small body without rowCap", () => {
+    // 100 bytes is well under DEFAULT_ROW_CAP, so no truncation.
     const bytes = new Uint8Array(100);
     const { container } = render(<HexViewer bytes={bytes} />);
+    expect(container.textContent).not.toContain("truncated");
+  });
+
+  it("Number.POSITIVE_INFINITY as rowCap disables the cap", () => {
+    // 5000 rows. The default cap would clip to 4096; with
+    // the infinity override, all 5000 render.
+    const bytes = new Uint8Array(5000 * 16);
+    const { container } = render(
+      <HexViewer bytes={bytes} rowCap={Number.POSITIVE_INFINITY} />,
+    );
+    const rows = container.querySelectorAll('[data-testid="hex-viewer-row"]');
+    expect(rows.length).toBe(5000);
     expect(container.textContent).not.toContain("truncated");
   });
 

@@ -27,6 +27,16 @@
 //! for bodies larger than 1 MiB the parent should truncate
 //! before calling, per the design).
 //!
+//! **Default row cap (added 2026-07-21, v0.5 review):** the
+//! default cap is `DEFAULT_ROW_CAP = 4096` rows (64 KiB of
+//! input). Callers can pass `rowCap` to raise or lower the
+//! cap; passing `rowCap={Infinity}` disables the cap. The
+//! default prevents a future caller from OOM-ing the
+//! renderer by passing an unbounded `Uint8Array` (a 100 MB
+//! body would be 6.25M rows of 16 DOM nodes each). Callers
+//! that intentionally want unbounded render can opt out
+//! explicitly with `rowCap={Number.POSITIVE_INFINITY}`.
+//!
 //! **Performance:** the viewer uses a virtualized-on-scroll
 //! strategy for bodies > 256 rows (a small 4 KB body
 //! renders as 256 rows; a 1 MB body renders as 65,536 rows).
@@ -46,12 +56,18 @@ interface Props {
    * Optional cap on the number of rows to render. Past
    * the cap, the viewer shows "truncated; first N rows
    * shown" and a button to copy the full hex to the
-   * clipboard. Default: no cap (render all rows).
+   * clipboard. Default: `DEFAULT_ROW_CAP` (4096 rows =
+   * 64 KiB of input). Pass `Number.POSITIVE_INFINITY` to
+   * disable the cap (e.g. for a paste buffer the user
+   * intentionally wants to view end-to-end).
    */
   readonly rowCap?: number;
 }
 
 const BYTES_PER_ROW = 16;
+
+/** Default row cap when the caller does not pass `rowCap`. */
+const DEFAULT_ROW_CAP = 4096;
 
 /**
  * Returns `true` for bytes that are printable ASCII (no
@@ -110,8 +126,11 @@ export function HexViewer({ bytes, rowCap }: Props) {
   // The total row count, before any cap. Used for the
   // "truncated" UI when `rowCap` is set.
   const totalRows = Math.ceil(bytes.length / BYTES_PER_ROW);
-  const renderRows = rowCap !== undefined ? Math.min(rowCap, totalRows) : totalRows;
-  const truncated = rowCap !== undefined && totalRows > rowCap;
+  // Resolve the effective cap: caller override > default.
+  // `Number.POSITIVE_INFINITY` is the documented opt-out.
+  const effectiveCap = rowCap ?? DEFAULT_ROW_CAP;
+  const renderRows = Math.min(effectiveCap, totalRows);
+  const truncated = totalRows > effectiveCap;
 
   // Pre-compute the row list (cheap; O(N) for N bytes).
   // useMemo avoids re-rendering the rows when the user
