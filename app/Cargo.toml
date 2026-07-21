@@ -15,7 +15,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
 name = "talon"
-path = "src/main.rs"
+# Desktop entry (Windows, macOS, Linux). When iOS / Android
+# support lands, Tauri 2's `cargo tauri ios init` /
+# `cargo tauri android init` generate the platform entry
+# points from the `mobile_entry_point` attribute on
+# `app_lib::run()` — no `bin/ios.rs` or `bin/android.rs` is
+# needed here.
+path = "src/bin/desktop.rs"
 
 [build-dependencies]
 tauri-build = { workspace = true }
