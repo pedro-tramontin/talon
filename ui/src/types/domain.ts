@@ -81,17 +81,25 @@ export interface ExchangeListPage {
  * `crates/bk-core/src/model.rs`). The `kind` tag discriminates
  * the variant:
  *   - `complete`: the body is fully buffered; `data` is the
- *     raw bytes (serialized as a JSON array of byte values,
- *     e.g. `[104, 101, 108, 108, 111]` for "hello"). To decode
- *     to a UTF-8 string, use `new TextDecoder().decode(new
- *     Uint8Array(data))`. **Do NOT** call `atob(data)` — that
- *     would treat the array as a base64 string and fail.
+ *     raw bytes. **v0.5 wire form:** a base64 string
+ *     (e.g. `"aGVsbG8="` for "hello"). **v0.1 wire form (still
+ *     accepted for backwards compat):** a JSON array of byte
+ *     values, e.g. `[104, 101, 108, 108, 111]`. The Rust
+ *     deserializer (the `body_complete_data_serde` module
+ *     in `crates/bk-core/src/model.rs`) accepts both; the UI
+ *     distinguishes by `typeof data === "string"` (new) vs.
+ *     `Array.isArray(data)` (legacy). To decode to bytes,
+ *     use the `decodeBodyToBytes` helper in
+ *     `InspectorPanel.tsx` (it handles both forms). **Do NOT**
+ *     call `new Uint8Array(data)` directly — for the v0.5
+ *     string form, that would create a UTF-8 view of the
+ *     base64 chars, not the decoded bytes.
  *   - `streaming`: the body is on the wire; only the
  *     `content_length` is known.
  *   - `empty`: no body (e.g., a GET with no payload).
  */
 export type ExchangeBody =
-  | { readonly kind: "complete"; readonly data: readonly number[] }
+  | { readonly kind: "complete"; readonly data: string | readonly number[] }
   | { readonly kind: "streaming"; readonly content_length: number | null }
   | { readonly kind: "empty" };
 

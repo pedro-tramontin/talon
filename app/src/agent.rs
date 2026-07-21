@@ -36,12 +36,27 @@ use crate::wire::{emit_wire_event, make_wire_event, WireEventSeq};
 /// `ui/src/state/agent.ts`.
 pub(crate) const CONFIRM_TIMEOUT_SECS: u64 = 300;
 
-/// Tools that the agent must receive user approval for before they
-/// are considered safe to invoke. In v0.1, `bk-agent` only exposes
-/// read-only tools (`talon_list_recent`, `talon_search`, etc.) so this
-/// list is empty. Phase 4 will populate it with the destructive
-/// write tools (e.g. `talon_delete_exchange`).
-const WRITE_TOOLS: &[&str] = &[];
+/// Tools the agent must get a user confirmation before invoking.
+///
+/// This list is intentionally hand-maintained (not derived
+/// from `bk_agent::TOOL_SCHEMAS`): destructive tools are
+/// NOT in the default `TOOL_SCHEMAS` registry — the v0.1
+/// design keeps destructive tools opt-in (the user has to
+/// add them to `AgentConfig::allowed_tools` explicitly).
+/// If we derived from TOOL_SCHEMAS the list would always
+/// be empty and the confirm flow would be dead code.
+///
+/// The UI keeps a mirror set in
+/// `ui/src/components/ConfirmDialog.tsx::DESTRUCTIVE_TOOLS`
+/// to decide which tools trigger the "type DELETE"
+/// hard-confirm. Both sides must stay in sync. The single
+/// source of truth for the SEMANTIC "is this destructive"
+/// decision is the `bk_mcp` registry; the name lists are
+/// kept in lockstep by the Phase 5/7 tool-adding checklist
+/// ("every new destructive tool: (1) add here,
+/// (2) add to UI set, (3) update `destructive_tool_names`
+/// test in `app/src/agent.rs::tests`").
+const WRITE_TOOLS: &[&str] = &["talon_delete_exchange"];
 
 /// Tauri event label for streamed agent events.
 pub(crate) const AGENT_EVENT_LABEL: &str = "agent_event";
@@ -699,5 +714,26 @@ mod tests {
         let _ = CONFIRM_REQUEST_LABEL;
         let _ = CONFIRM_RESPONSE_LABEL;
         let _ = WEBVIEW_LABEL;
+    }
+
+    /// Lockstep guard: `WRITE_TOOLS` MUST contain every
+    /// `bk_mcp` tool that the v0.1 release exposes as
+    /// destructive. The current v0.1 surface has exactly
+    /// one such tool (`talon_delete_exchange`); Phase 5/7
+    /// will add more. This test fails the moment someone
+    /// adds a destructive tool to `bk_mcp` without also
+    /// adding it here — the symptom would be that the
+    /// confirm flow never fires for that tool and the LLM
+    /// can invoke it without user approval.
+    #[test]
+    fn write_tools_covers_talon_delete_exchange() {
+        assert!(
+            WRITE_TOOLS.contains(&"talon_delete_exchange"),
+            "talon_delete_exchange is registered in bk_mcp as \
+             a destructive tool but is missing from WRITE_TOOLS; \
+             the confirm dialog will never fire. Add it to \
+             app/src/agent.rs::WRITE_TOOLS and to the mirror set \
+             in ui/src/components/ConfirmDialog.tsx::DESTRUCTIVE_TOOLS."
+        );
     }
 }

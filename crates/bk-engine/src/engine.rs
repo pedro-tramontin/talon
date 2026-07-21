@@ -119,15 +119,18 @@ impl Engine {
             .get(project_id)
             .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
         bk_store::exchanges::insert(&pool, exchange)?;
-        // Emit on the full bus (UI adds a row).
-        let summary = exchange.meta.summary.clone();
+        // Emit on the full bus (UI adds a row). v0.5: the
+        // event carries the full `HttpExchange` so the UI
+        // doesn't need a per-click `get_exchange` round-trip.
+        // The wire payload is base64-encoded for bodies
+        // (per `body_complete_data_serde` in `bk-core`).
         let id = exchange.meta.id;
         let _ = self
             .event_tx
             .send(crate::events::EngineEvent::ExchangeInserted {
                 id,
                 project_id,
-                summary,
+                exchange: exchange.clone(),
             });
         // Demux to the MCP bus: smaller payload (no request/response
         // body — the LLM can call `talon_get_exchange` to fetch if
