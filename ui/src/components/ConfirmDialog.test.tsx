@@ -116,4 +116,29 @@ describe("ConfirmDialog", () => {
     ).toBeNull();
     expect(screen.getByTestId("confirm-dialog-allow")).not.toBeDisabled();
   });
+
+  // Lockstep guard: the UI-side DESTRUCTIVE_TOOLS set MUST
+  // mirror the Rust-side WRITE_TOOLS list (see
+  // app/src/agent.rs::write_tools_covers_talon_delete_exchange).
+  // If a future tool is added to WRITE_TOOLS but missing here,
+  // the "type DELETE" prompt will silently skip. We can't
+  // import the set from the component (it's not exported), so
+  // we re-render with a known destructive tool name and assert
+  // the destructive input appears — same test, but framed as
+  // a contract check rather than a UI test.
+  it("treats talon_delete_exchange as destructive (lockstep with Rust)", () => {
+    render(
+      <ConfirmDialog
+        runId="r"
+        toolName="talon_delete_exchange"
+        args={{ id: "x" }}
+      />,
+    );
+    // Destructive input MUST be present.
+    expect(
+      screen.getByTestId("confirm-dialog-destructive-input"),
+    ).toBeInTheDocument();
+    // Allow MUST be disabled until the user types DELETE.
+    expect(screen.getByTestId("confirm-dialog-allow")).toBeDisabled();
+  });
 });
