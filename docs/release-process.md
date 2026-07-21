@@ -138,14 +138,24 @@ This was the failure mode on the very first release-please run for talon (2026-0
 
 **Root cause:** the original `release-please-config.json` declared a single `package` (the root) with `release-type: rust`, which assumes a single-crate repo. The Cargo workspace has 8 member crates, and release-please's rust releaser discovers each one and wants to release it on its own line. The single-package config didn't declare them, so the manifest didn't track them, and the run bailed.
 
-**Fix:** the config now lists all 8 crates as separate `packages` entries (one per `crates/<name>` path, each with a `component: <name>`) and uses two plugins:
+**Fix:** the config now lists all 8 crates as separate `packages` entries (one per `crates/<name>` path, each with a `component: <name>` and `release-type: "rust"`) and uses two plugins:
 
 - `cargo-workspace` with `merge: false` — builds the crate dependency graph so release-please knows which crates depend on which
 - `linked-versions` with `groupName: "talon"` and all 8 component names — keeps all 8 crates on a single version line (when any one is bumped, the highest version is picked and applied to all)
 
 The manifest now has 8 entries (one per crate) all at `0.1.0`, instead of the single root entry.
 
-If you ever see this error again, the symptom is **a new crate added to the workspace** without a corresponding entry in the manifest. Fix: add `{ "crates/<name>": "<current-version>" }` to `.release-please-manifest.json` and `{ "crates/<name>": { "component": "<name>" } }` to `release-please-config.json`'s `packages` block (and add `"<name>"` to the `linked-versions` `components` list).
+If you ever see this error again, the symptom is **a new crate added to the workspace** without a corresponding entry in the manifest. Fix: add `{ "crates/<name>": "<current-version>" }` to `.release-please-manifest.json` and `{ "crates/<name>": { "component": "<name>", "release-type": "rust" } }` to `release-please-config.json`'s `packages` block (and add `"<name>"` to the `linked-versions` `components` list).
+
+### 4.1b `node (pedro-tramontin/talon): Missing required file: crates/<crate>/package.json`
+
+This was the failure mode on the second release-please run for talon (2026-07-21, immediately after #4.1a's fix). It means release-please's per-package releaser defaulted to `node` and tried to read a `package.json` from each crate's path.
+
+**Root cause:** the manifest-driven release-please config has a **default `release-type: node`** when no top-level or per-package `release-type` is set. The first fix (#4.1a) added the multi-package shape but didn't carry the top-level `release-type: rust` forward from the original config, so each of the 8 packages silently inherited the node default. release-please then looked for `crates/bk-core/package.json`, etc. — files that don't exist (those directories contain Rust crates, not Node packages).
+
+**Fix:** added `"release-type": "rust"` at both the top level of `release-please-config.json` (as the default for any new package that doesn't override) and on every per-package entry (defense in depth — a Phase 5+ maintainer who adds `crates/bk-fuzzer` without setting a release-type will inherit the correct default).
+
+If you ever see this error again, the symptom is **a new crate added to the workspace** with a per-package entry that doesn't set `"release-type": "rust"`. Fix: add the field to the new package's config block. (Or, the same fix works at the top level: a single `release-type` change applies to all packages.)
 
 ### 4.2 release.yml didn't fire after a tag push
 
