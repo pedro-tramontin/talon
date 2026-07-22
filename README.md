@@ -89,21 +89,15 @@ cargo run --bin talon          # in another terminal — starts the Tauri app po
 make ci
 ```
 
-## Architecture
+## Documentation
 
-Talon is a Rust workspace with a Tauri 2 desktop shell:
-
-- **`bk-core`** — request / response / project / scope / match-replace types, error enums, Uuid wrappers
-- **`bk-store`** — SQLite persistence (migrations, FTS5 search, tag CRUD, per-project `.sqlite` files)
-- **`bk-events`** — typed `WireEvent` envelope + `fan_in` helper for cross-source event aggregation
-- **`bk-engine`** — long-lived `Engine` that holds open projects, serves Tauri commands, and bridges the proxy → store
-- **`bk-proxy`** — MITM proxy (HTTP/1.1 + HTTP/2, dynamic CA, body streaming, upstream pool with ALPN)
-- **`bk-mcp`** — stdio MCP server (20 tools, drives Talon from external LLMs)
-- **`bk-agent`** — OpenAI-compatible agent loop, per-tool confirm dialogs
-- **`app`** — Tauri 2 shell: 21 Tauri commands, React frontend, wire-bus event fan-in
-- **`ui`** — React 18 + TypeScript + Vite + Tailwind + Zustand
-
-See [`docs/adr/0001-supply-chain-monitoring.md`](docs/adr/0001-supply-chain-monitoring.md) for the supply-chain threat model and the rationale for the build-time-only crate isolation.
+- **[`DEVELOPER.md`](DEVELOPER.md)** — building, running, testing, debugging, the inner dev loop
+- **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — how to contribute (issues, PRs, AI policy, code review checklist)
+- **[`docs/architecture.md`](docs/architecture.md)** — crate layout, process topology, data flow, invariants
+- **[`docs/requirements.md`](docs/requirements.md)** — host toolchain per OS
+- **[`docs/adr/0001-supply-chain-monitoring.md`](docs/adr/0001-supply-chain-monitoring.md)** — supply-chain threat model + the `dom_query` / `quick-xml` build-time-only isolation
+- **[`docs/release-process.md`](docs/release-process.md)** — release-please lifecycle, tag-triggered builds, the manual-cut recovery recipe for `linked-versions` drift
+- **[`docs/dependency-upgrade-plan.md`](docs/dependency-upgrade-plan.md)** — which dep bumps go in which PR
 
 ## Security
 
