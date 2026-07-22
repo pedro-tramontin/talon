@@ -12,6 +12,7 @@
 import { createStore, useStore } from "zustand";
 import type { StoreApi } from "zustand/vanilla";
 import type { ExchangeId } from "../types/ids";
+import type { MatchReplaceRule, ScopeRule } from "../types/domain";
 
 /**
  * The four tabs in the §4.7 right-rail layout. Order is
@@ -85,17 +86,55 @@ export type UiStore = {
   setFilterFtsResults: (ids: ExchangeId[]) => void;
 
   /**
-   * The main-panel mode. `"capture"` shows the §4.3-4.4
-   * `ExchangeDetail` (the default for v1); `"replay"`
-   * shows the Phase 5 `ReplayView` (tab bar + request
-   * editor + response viewer + history panel). The
-   * `ExchangeList` row's Replay button (added in Phase 5)
-   * flips this to `"replay"` after `useReplayStore.openTab`.
-   */
+   * The main-panel mode. `"capture"` shows the §4.3cid;
+  `"replay"` shows the Phase 5 `ReplayView` (tab bar + request
+  editor + response viewer + history panel). The
+  `ExchangeList` row's Replay button (added in Phase 5)
+  flips this to `"replay"` after `useReplayStore.openTab`.
+  */
   mode: "capture" | "replay";
 
   /** Switch the main-panel mode. */
   setMode: (m: "capture" | "replay") => void;
+
+  // -------------------------------------------------------------------------
+  // Phase 6 (§6.6 + §6.7) — scope rules + match & replace rules
+  // -------------------------------------------------------------------------
+
+  /**
+   * The active project's scope rules (Phase 6 §6.6). The
+   * `ScopeRuleEditor` component (bottom of the left rail)
+   * reads + writes this; the Tauri command round-trips
+   * through `Engine::get_project` / `update_project`.
+   *
+   * Empty array when no project is open or the project has
+   * no rules. The list is the source of truth in the UI;
+   * the backend has the same data in `Project::settings::scope_rules`.
+   */
+  scopeRules: ScopeRule[];
+
+  /** Replace the scope rules list. */
+  setScopeRules: (rules: ScopeRule[]) => void;
+
+  /**
+   * The active project's match & replace rules (Phase 6
+   * §6.7). The `MatchReplaceEditor` component (inside the
+   * Settings modal) reads + writes this.
+   */
+  matchReplaceRules: MatchReplaceRule[];
+
+  /** Replace the M&R rules list. */
+  setMatchReplaceRules: (rules: MatchReplaceRule[]) => void;
+
+  /**
+   * Whether the Settings modal is open. Flipped by the
+   * "Settings" button in the top bar; closes on overlay
+   * click or on the explicit close button.
+   */
+  settingsOpen: boolean;
+
+  /** Open / close the Settings modal. */
+  setSettingsOpen: (open: boolean) => void;
 };
 
 function createUiStore() {
@@ -122,6 +161,24 @@ function createUiStore() {
 
     setMode(m) {
       set({ mode: m });
+    },
+
+    scopeRules: [],
+
+    setScopeRules(rules) {
+      set({ scopeRules: rules });
+    },
+
+    matchReplaceRules: [],
+
+    setMatchReplaceRules(rules) {
+      set({ matchReplaceRules: rules });
+    },
+
+    settingsOpen: false,
+
+    setSettingsOpen(open) {
+      set({ settingsOpen: open });
     },
   }));
 }
