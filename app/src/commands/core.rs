@@ -378,10 +378,47 @@ pub fn proxy_status(handle: State<'_, ProxyHandleArc>) -> Result<ProxyStatus, St
 /// (idempotent: returns `Ok` if already running). The default
 /// `ProxyConfig::default()` binds to `127.0.0.1:8080` per the
 /// §3.1 contract.
+///
+/// **Phase 6 Part C (§C-A.2):** looks up the active project's
+/// `ProjectSettings` via `Engine::get_project` and passes the
+/// project's `scope_rules` + `match_replace_rules` to the
+/// proxy via `start_with_rules`. The proxy stores them as
+/// "pending" (the v0.5+ capture loop is the consumer). If
+/// no project is open (the "no active project" case), the
+/// proxy starts with empty `Vec`s — the v1 default behavior.
 #[tauri::command]
-pub async fn start_proxy(handle: State<'_, ProxyHandleArc>) -> Result<(), String> {
+pub async fn start_proxy(
+    handle: State<'_, ProxyHandleArc>,
+    engine: State<'_, EngineArc>,
+) -> Result<(), String> {
+    // Look up the active project's rules. `open_ids` returns
+    // the open projects; v1 uses the FIRST one (the §4.1
+    // "active project" semantic; a future multi-active-project
+    // refactor would thread `project_id` through the JS-side
+    // `start_proxy` call).
+    let project_id = engine.open_ids().into_iter().next();
+    let (scope_rules, match_replace_rules) = match project_id {
+        Some(pid) => match engine.get_project(pid) {
+            Ok(project) => (
+                project.settings.scope_rules,
+                project.settings.match_replace_rules,
+            ),
+            Err(e) => {
+                // Defensive: if the project lookup fails, fall
+                // back to the empty-`Vec` v1 default. Logged
+                // so the user sees the failure.
+                tracing::warn!(
+                    project_id = %pid,
+                    error = %e,
+                    "start_proxy: get_project failed, falling back to empty rules"
+                );
+                (Vec::new(), Vec::new())
+            }
+        },
+        None => (Vec::new(), Vec::new()),
+    };
     handle
-        .start(ProxyConfig::default())
+        .start_with_rules(ProxyConfig::default(), scope_rules, match_replace_rules)
         .await
         .map_err(|e| format!("start_proxy failed: {e}"))
 }

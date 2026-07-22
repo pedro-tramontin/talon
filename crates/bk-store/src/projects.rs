@@ -8,13 +8,25 @@
 //! without it — the engine owns the `Project` model, so the engine
 //! is the right place to persist it. Keeping the SQL here mirrors
 //! the `exchanges.rs` / `tags.rs` / `fts.rs` shape.
+//!
+//! ## `update_settings` (Phase 6 Part C, §C-A.1)
+//!
+//! `update_settings` persists the `ProjectSettings` blob (scope
+//! rules + M&R rules + theme + proxy_enabled) to the
+//! `projects.settings_json` column. The engine's
+//! `Engine::save_settings` method calls this on every CRUD mutation
+//! to the in-memory `ProjectSettings` cache. The on-disk
+//! representation is the same JSON the in-memory
+//! `ProjectSettings` serializes to via `serde_json` (the column's
+//! `DEFAULT '{}'` matches `ProjectSettings::default()`).
 
 #![allow(missing_docs)]
 
 use crate::error::Result;
 use crate::DbPool;
-use bk_core::ProjectInfo;
+use bk_core::{ProjectId, ProjectInfo, ProjectSettings};
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 
 /// Insert or update the `projects` row for a given `ProjectInfo`.
 /// Idempotent: calling it twice with the same `id` is fine.
@@ -61,11 +73,93 @@ pub fn upsert(pool: &DbPool, info: &ProjectInfo) -> Result<()> {
     Ok(())
 }
 
+/// Persist the `ProjectSettings` blob to the `settings_json`
+/// column for a given project. The engine's
+/// `Engine::save_settings` calls this on every CRUD mutation.
+///
+/// **Idempotency:** the UPDATE is a full-replace of the
+/// `settings_json` column. Re-running with the same `settings`
+/// is a no-op (the JSON is identical). The `ProjectInfo` side
+/// is NOT touched — the `upsert` method owns the info columns;
+/// this method owns the settings column.
+///
+/// **Why not in the `upsert` `ON CONFLICT` clause?** because the
+/// settings are owned by the engine, not by `ProjectInfo`. A
+/// user who calls `upsert` with a freshly-stamped `ProjectInfo`
+/// shouldn't accidentally clobber their settings with the
+/// `ProjectSettings::default()` they passed in.
+pub fn update_settings(
+    pool: &DbPool,
+    project_id: ProjectId,
+    settings: &ProjectSettings,
+) -> Result<()> {
+    let conn = pool.get()?;
+    let settings_json = serde_json::to_string(settings)
+        .map_err(|e| crate::StoreError::Invalid(format!("settings JSON serialize: {e}")))?;
+    let updated = conn.execute(
+        "UPDATE projects
+         SET settings_json = ?1
+         WHERE id = ?2",
+        params![settings_json, project_id.to_string()],
+    )?;
+    if updated == 0 {
+        // No row matched: the project isn't in the `projects`
+        // table yet. Caller (the engine) should ensure the
+        // project is `upsert`ed before calling
+        // `update_settings`.
+        return Err(crate::StoreError::Invalid(format!(
+            "update_settings: project {project_id} not found in projects table"
+        )));
+    }
+    Ok(())
+}
+
+/// Read the `ProjectSettings` blob from the `settings_json`
+/// column. Returns `ProjectSettings::default()` if the column
+/// is empty (the schema's `DEFAULT '{}'` guarantees this for
+/// Read the `ProjectSettings` blob from the `settings_json`
+/// column. Returns `ProjectSettings::default()` if the column
+/// is empty or unparseable (the schema's `DEFAULT '{}'` gives
+/// us `'{}'` for fresh rows; the engine path that goes through
+/// `update_settings` writes the proper default JSON, so a
+/// `'{}'` value only appears for pre-migration-001 DBs).
+pub fn read_settings(pool: &DbPool, project_id: ProjectId) -> Result<ProjectSettings> {
+    let conn = pool.get()?;
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT settings_json FROM projects WHERE id = ?1",
+            params![project_id.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match json {
+        None => Err(crate::StoreError::Invalid(format!(
+            "read_settings: project {project_id} not found"
+        ))),
+        Some(s) => {
+            // The schema's DEFAULT is `'{}'` (set by migration 001
+            // before `ProjectSettings` existed). The current
+            // `ProjectSettings::default()` serializes to a longer
+            // JSON with all 4 fields. For a `'{}'` value, return
+            // `ProjectSettings::default()` so callers don't have
+            // to special-case the empty blob.
+            if s.is_empty() || s == "{}" {
+                return Ok(ProjectSettings::default());
+            }
+            serde_json::from_str(&s)
+                .map_err(|e| crate::StoreError::Invalid(format!("settings JSON parse: {e}")))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::exchanges;
-    use bk_core::{Body, ExchangeMeta, HeaderMap, HttpExchange, Method, Request, ScopeState};
+    use bk_core::{
+        Body, ExchangeMeta, HeaderMap, HttpExchange, Method, ProjectSettings, Request, ScopeState,
+        Theme,
+    };
     use tempfile::TempDir;
 
     fn make_info() -> ProjectInfo {
@@ -172,6 +266,132 @@ mod tests {
         assert_eq!(
             stored, "2026-01-01T00:00:00+00:00",
             "created_at must be immutable across re-upserts"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // §C-A.1 tests — `update_settings` / `read_settings` round-trip
+    // -----------------------------------------------------------------------
+
+    /// `update_settings` round-trips: write a non-default
+    /// `ProjectSettings`, read it back, the scope_rules +
+    /// M&R rules are preserved.
+    #[test]
+    fn update_settings_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.db");
+        let info = make_info();
+        let pid = info.id;
+        let pool = crate::open(&path).unwrap();
+        upsert(&pool, &info).unwrap();
+
+        let settings = ProjectSettings {
+            theme: Theme::Dark,
+            proxy_enabled: false,
+            scope_rules: vec![bk_core::ScopeRule {
+                kind: bk_core::ScopeRuleKind::Host,
+                pattern: "acme.bb".to_string(),
+                action: bk_core::MatchAction::InScope,
+                label: "primary".to_string(),
+                priority: 10,
+            }],
+            match_replace_rules: vec![bk_core::MatchReplaceRule {
+                target: bk_core::MatchReplaceTarget::RequestUrl,
+                pattern: "old".to_string(),
+                replace: "new".to_string(),
+                is_regex: false,
+                case_insensitive: false,
+                enabled: true,
+                priority: 0,
+            }],
+        };
+        update_settings(&pool, pid, &settings).unwrap();
+
+        let read = read_settings(&pool, pid).unwrap();
+        assert_eq!(read.theme, Theme::Dark);
+        assert!(!read.proxy_enabled);
+        assert_eq!(read.scope_rules.len(), 1);
+        assert_eq!(read.scope_rules[0].label, "primary");
+        assert_eq!(read.scope_rules[0].priority, 10);
+        assert_eq!(read.match_replace_rules.len(), 1);
+        assert_eq!(read.match_replace_rules[0].pattern, "old");
+    }
+
+    /// `update_settings` is idempotent: calling it twice with
+    /// the same settings is a no-op (no error, same result).
+    #[test]
+    fn update_settings_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.db");
+        let info = make_info();
+        let pid = info.id;
+        let pool = crate::open(&path).unwrap();
+        upsert(&pool, &info).unwrap();
+
+        let settings = ProjectSettings {
+            theme: Theme::Light,
+            ..Default::default()
+        };
+        update_settings(&pool, pid, &settings).unwrap();
+        update_settings(&pool, pid, &settings).unwrap();
+        let read = read_settings(&pool, pid).unwrap();
+        assert_eq!(read.theme, Theme::Light);
+    }
+
+    /// `update_settings` errors on a project that doesn't
+    /// exist in the `projects` table (no row to UPDATE).
+    #[test]
+    fn update_settings_errors_on_missing_project() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.db");
+        let pool = crate::open(&path).unwrap();
+        let unknown_pid = bk_core::ProjectId::new();
+        let res = update_settings(&pool, unknown_pid, &ProjectSettings::default());
+        assert!(res.is_err());
+        assert!(format!("{res:?}").contains("not found"));
+    }
+
+    /// `read_settings` on a freshly-upserted project (no
+    /// explicit `update_settings` call) returns
+    /// `ProjectSettings::default()` — the schema's
+    /// `DEFAULT '{}'` makes this work.
+    #[test]
+    fn read_settings_returns_default_for_fresh_project() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.db");
+        let info = make_info();
+        let pid = info.id;
+        let pool = crate::open(&path).unwrap();
+        upsert(&pool, &info).unwrap();
+        let read = read_settings(&pool, pid).unwrap();
+        assert_eq!(read, ProjectSettings::default());
+    }
+
+    /// `update_settings` is independent of `ProjectInfo`:
+    /// updating the settings doesn't clobber the info
+    /// columns, and vice versa.
+    #[test]
+    fn update_settings_does_not_touch_info_columns() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.db");
+        let info = make_info();
+        let pid = info.id;
+        let pool = crate::open(&path).unwrap();
+        upsert(&pool, &info).unwrap();
+
+        let settings = ProjectSettings {
+            theme: Theme::Dark,
+            ..Default::default()
+        };
+        update_settings(&pool, pid, &settings).unwrap();
+
+        // Re-upsert info: the settings must NOT be reset.
+        upsert(&pool, &info).unwrap();
+        let read = read_settings(&pool, pid).unwrap();
+        assert_eq!(
+            read.theme,
+            Theme::Dark,
+            "upsert must not reset settings_json"
         );
     }
 }

@@ -14,6 +14,11 @@ pub use events::{EngineEvent, EventReceiver, EventSender};
 pub use mcp_events::{McpEvent, McpEventOrder, McpEventReceiver, McpEventSender};
 pub use projects::Projects;
 
+/// Re-export the `bk_store::replay_history` types so the
+/// Tauri command surface can use them without a direct
+/// `bk-store` dep (Phase 6 Part C, §C-A.4).
+pub use bk_store::replay_history::ReplayHistoryEntry;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -293,10 +293,63 @@ export async function sendReplay(
   projectId: DomainProjectId,
   request: ExchangeRequest,
 ): Promise<ExchangeDetail> {
+  // Phase 6 Part C (§C-A.3): the Rust side now takes the
+  // `Request` struct directly (via Tauri 2's auto-deserialize),
+  // not a JSON-stringified string. The `JSON.stringify` is
+  // dropped; the IPC bridge serializes the `ExchangeRequest`
+  // object to the wire shape automatically.
   return await invoke<ExchangeDetail>("send_replay", {
     projectId,
-    requestJson: JSON.stringify(request),
+    request,
   });
+}
+
+
+// ---------------------------------------------------------------------------
+// Phase 6 Part C (§C-A.4) — replay history persistence.
+// ---------------------------------------------------------------------------
+
+/**
+ * A single replay history entry. The Rust `ReplayHistoryEntry`
+ * struct serializes 1:1 to this shape. The UI's
+ * `ReplayStore.openTab` action calls `listReplayHistory` to
+ * rehydrate the tab's in-memory `history` field.
+ */
+export type ReplayHistoryEntry = {
+  id: string;
+  project_id: string;
+  tab_id: string;
+  request_exchange_id: string;
+  response_exchange_id: string | null;
+  timestamp: string;
+  sequence_within_tab: number;
+};
+
+/**
+ * List every replay history entry for a given tab, ordered
+ * by `sequence_within_tab` ASC. Returns an empty array for a
+ * tab that has no history.
+ */
+export async function listReplayHistory(
+  projectId: DomainProjectId,
+  tabId: string,
+): Promise<ReplayHistoryEntry[]> {
+  return await invoke<ReplayHistoryEntry[]>("list_replay_history", {
+    projectId,
+    tabId,
+  });
+}
+
+/**
+ * Persist a new replay history entry. The UI's
+ * `ReplayStore.appendSend` action calls this after the
+ * in-memory store update.
+ */
+export async function appendReplayHistory(
+  projectId: DomainProjectId,
+  entry: ReplayHistoryEntry,
+): Promise<void> {
+  await invoke<void>("append_replay_history", { projectId, entry });
 }
 
 
