@@ -14,7 +14,7 @@
 /// bump this number. Bumping tells the runner: "after running
 /// migrations up to and including this version, this is what the DB
 /// should look like."
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Migration 001 — initial schema. Creates every table the rest of
 /// the codebase reads from. Idempotent: uses `CREATE TABLE IF NOT EXISTS`
@@ -168,4 +168,42 @@ SELECT
     COALESCE(json_extract(e.response_json, '$.body'), ''),
     e.notes
 FROM exchanges e;
+"#;
+
+/// Migration 003 — adds the `replay_history` table (Phase 6 Part C,
+/// §C-A.4). The table persists per-tab replay send history so the
+/// history panel survives an app restart. The Rust side of the
+/// persistence is in `bk_store::replay_history`; the Tauri commands
+/// (`list_replay_history` + `append_replay_history`) live in
+/// `app/src/commands/replay.rs`.
+///
+/// **Why a new table and not a new column on `exchanges`:** the
+/// `replay_history` rows are derived from the `exchanges` rows
+/// (each replay send creates an exchange via the §5.2 path), but
+/// they carry extra per-tab metadata (`tab_id`,
+/// `sequence_within_tab`) that doesn't belong on the `exchanges`
+/// table. A new table with FKs to both `projects` and `exchanges`
+/// keeps the schema normalized.
+///
+/// **Idempotency:** the `CREATE TABLE IF NOT EXISTS` and
+/// `CREATE INDEX IF NOT EXISTS` clauses make this safe to run on
+/// an already-migrated DB. The runner wraps the whole migration
+/// in a transaction (see `migrations::run`), so a partial failure
+/// rolls back cleanly.
+pub const MIGRATION_003_REPLAY_HISTORY: &str = r#"
+CREATE TABLE IF NOT EXISTS replay_history (
+    id                       TEXT PRIMARY KEY NOT NULL,
+    project_id               TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    tab_id                   TEXT NOT NULL,
+    request_exchange_id      TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
+    response_exchange_id     TEXT REFERENCES exchanges(id) ON DELETE SET NULL,
+    timestamp                TEXT NOT NULL,
+    sequence_within_tab      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_replay_history_tab_seq
+    ON replay_history (tab_id, sequence_within_tab ASC);
+
+CREATE INDEX IF NOT EXISTS idx_replay_history_project_ts
+    ON replay_history (project_id, timestamp DESC);
 "#;

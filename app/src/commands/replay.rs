@@ -191,14 +191,23 @@ fn cap_response_body(response: &Response) -> (Response, bool) {
     )
 }
 
-/// `send_replay(project_id, request_json) -> HttpExchange`.
+/// `send_replay(project_id, request) -> HttpExchange`.
 ///
-/// Takes the user's edited request (JSON-stringified, per the
-/// v0.5+ follow-up comment in the plan file), sends it to the
-/// real upstream, persists the resulting `HttpExchange` via
-/// `Engine::insert_exchange`, and returns it. A `replay_event`
-/// `WireEvent` of kind `SendComplete` is emitted; `SendFailed`
-/// on error.
+/// Takes the user's edited request directly (Tauri 2's IPC
+/// bridge auto-deserializes the `bk_core::Request` struct via
+/// its `Deserialize` impl; the v0.5+ refactor of the previous
+/// `request_json: String` + `serde_json::from_str` pair),
+/// sends it to the real upstream, persists the resulting
+/// `HttpExchange` via `Engine::insert_exchange`, and returns
+/// it. A `replay_event` `WireEvent` of kind `SendComplete` is
+/// emitted; `SendFailed` on error.
+///
+/// **v0.5+ refactor (Phase 6 Part C, §C-A.3):** the argument
+/// is now a `Request` instead of a `String`. Tauri 2's IPC
+/// bridge serializes the `bk_core::Request` struct directly
+/// (it derives `Deserialize`); the JS side drops the
+/// `JSON.stringify` call. The 1 MB response body cap is
+/// preserved.
 ///
 /// **Spec drift note (D4 — Upstream API):** the plan's
 /// `bk_proxy::upstream::Upstream::send()` doesn't exist. The
@@ -210,18 +219,20 @@ fn cap_response_body(response: &Response) -> (Response, bool) {
 /// (plain HTTP) — sufficient for the smoke test path in
 /// Part B (`http://127.0.0.1:0`); the production HTTPS path
 /// is a v0.5+ follow-up that adds the `HttpsConnector` +
-/// `Pool` plumbing here. The 1 MB body cap is enforced on
-/// the response side.
+/// `Pool` plumbing here.
 #[tauri::command]
 pub async fn send_replay(
     app: AppHandle,
     engine: State<'_, EngineArc>,
     project_id: ProjectId,
-    request_json: String,
+    request: Request,
 ) -> Result<HttpExchange, String> {
-    // 1. Parse the request from JSON.
-    let request: Request =
-        serde_json::from_str(&request_json).map_err(|e| format!("invalid request JSON: {e}"))?;
+    // 1. Validate the URL is non-empty (Tauri's auto-deserialize
+    //    handles missing/malformed fields; this catches the
+    //    "JSON parsed but URL is empty string" case).
+    if request.url.as_str().is_empty() {
+        return Err("request has empty URL".to_string());
+    }
 
     // 2. Validate the target host BEFORE sending. The
     //    `is_valid_host_shape` helper is shared with
@@ -411,6 +422,40 @@ fn emit_failed(app: &AppHandle, project_id: ProjectId, error: String) {
         }),
     );
     let _ = app.emit_to(WEBVIEW_LABEL, WIRE_EVENT_LABEL, &wire);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 Part C, §C-A.4 — Replay history persistence commands
+// ---------------------------------------------------------------------------
+
+/// `list_replay_history(project_id, tab_id) -> Vec<ReplayHistoryEntry>`.
+/// Returns every entry for the given tab, ordered by
+/// `sequence_within_tab` ASC. Used by the UI's
+/// `ReplayStore.openTab` action to rehydrate the tab's
+/// in-memory `history` field.
+#[tauri::command]
+pub fn list_replay_history(
+    engine: State<'_, EngineArc>,
+    project_id: ProjectId,
+    tab_id: String,
+) -> Result<Vec<bk_engine::ReplayHistoryEntry>, String> {
+    engine
+        .list_replay_history(project_id, &tab_id)
+        .map_err(|e| format!("list_replay_history failed: {e}"))
+}
+
+/// `append_replay_history(project_id, entry) -> ()`. Persists
+/// a single replay send event. The UI's `ReplayStore.appendSend`
+/// action calls this after the in-memory store update.
+#[tauri::command]
+pub fn append_replay_history(
+    engine: State<'_, EngineArc>,
+    project_id: ProjectId,
+    entry: bk_engine::ReplayHistoryEntry,
+) -> Result<(), String> {
+    engine
+        .append_replay_history(project_id, &entry)
+        .map_err(|e| format!("append_replay_history failed: {e}"))
 }
 
 #[cfg(test)]

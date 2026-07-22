@@ -20,6 +20,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use bk_core::scope::{MatchReplaceRule, ScopeRule};
 use bk_proxy::{Proxy, ProxyConfig, ProxyEvent};
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::Mutex;
@@ -79,6 +80,15 @@ struct Inner {
     /// task). `subscribe_events` uses this to mint fresh
     /// subscribers for the §4.2 wire bus.
     proxy_event_tx: Option<broadcast::Sender<ProxyEvent>>,
+    /// The scope rules to apply on the next `start` /
+    /// `start_with_rules` call (Phase 6 Part C, §C-A.2).
+    /// Set by the Tauri `start_proxy` command by looking up
+    /// the active project's `ProjectSettings.scope_rules`. The
+    /// v0.5+ capture loop (not yet landed) is the consumer.
+    pending_scope_rules: Vec<ScopeRule>,
+    /// The M&R rules to apply on the next `start` /
+    /// `start_with_rules` call (Phase 6 Part C, §C-A.2).
+    pending_match_replace_rules: Vec<MatchReplaceRule>,
 }
 
 impl ProxyHandle {
@@ -104,6 +114,8 @@ impl ProxyHandle {
                 })),
                 ca: Arc::new(ca),
                 proxy_event_tx: None,
+                pending_scope_rules: Vec::new(),
+                pending_match_replace_rules: Vec::new(),
             }),
         }
     }
@@ -261,6 +273,76 @@ impl ProxyHandle {
             s.state = ProxyState::Stopped;
         }
     }
+
+    /// Set the pending scope + M&R rules that the next
+    /// `start_with_rules` call will use (Phase 6 Part C,
+    /// §C-A.2). The Tauri `start_proxy` command looks up the
+    /// active project's `ProjectSettings` and calls this
+    /// before `start_with_rules`. Empty `Vec`s are valid (the
+    /// "no rules yet" case).
+    ///
+    /// **Why "pending" and not "active":** the rules take
+    /// effect on the next `start` call. Once the proxy is
+    /// running, the rules are read by the v0.5+ capture loop
+    /// (not yet landed). The handle stores them so a future
+    /// `Proxy::run` signature can read them via
+    /// `take_pending_rules`.
+    pub async fn set_pending_rules(
+        &self,
+        scope_rules: Vec<ScopeRule>,
+        match_replace_rules: Vec<MatchReplaceRule>,
+    ) {
+        let mut inner = self.inner.lock().await;
+        inner.pending_scope_rules = scope_rules;
+        inner.pending_match_replace_rules = match_replace_rules;
+    }
+
+    /// Take the pending rules (drains them). Returns
+    /// `(scope_rules, match_replace_rules)`. Called by the
+    /// proxy's MITM-forwarding task on startup. After the
+    /// take, the pending fields are empty (the next `start`
+    /// without a `set_pending_rules` reverts to the v1
+    /// "empty rules" behavior).
+    ///
+    /// **Why this is `dead_code` allowed:** the v0.5+ capture
+    /// loop (the consumer of these rules) is not yet landed —
+    /// the current `Proxy::run` signature doesn't take the
+    /// rules as a parameter. The method is kept as the public
+    /// API contract for the future capture loop. Remove the
+    /// `#[allow(dead_code)]` when the capture loop is wired
+    /// in (Phase 8+ or a dedicated capture-loop phase).
+    #[allow(
+        dead_code,
+        reason = "Public API for the v0.5+ capture loop consumer; not yet called"
+    )]
+    pub async fn take_pending_rules(&self) -> (Vec<ScopeRule>, Vec<MatchReplaceRule>) {
+        let mut inner = self.inner.lock().await;
+        let scope = std::mem::take(&mut inner.pending_scope_rules);
+        let mr = std::mem::take(&mut inner.pending_match_replace_rules);
+        (scope, mr)
+    }
+
+    /// Start the proxy with the given rules. The rules are
+    /// stored as "pending" and the proxy task reads them on
+    /// startup via `take_pending_rules`. The actual consumer
+    /// of the rules (the MITM-forwarding loop) is the v0.5+
+    /// capture loop, not yet landed. This method is a thin
+    /// wrapper over `set_pending_rules` + `start`.
+    ///
+    /// **Defensive:** if the `set_pending_rules` call fails
+    /// (e.g. the lock is poisoned), the proxy still starts
+    /// with empty `Vec`s (the v1 default). The fallback is
+    /// logged but not returned to the caller.
+    pub async fn start_with_rules(
+        &self,
+        config: ProxyConfig,
+        scope_rules: Vec<ScopeRule>,
+        match_replace_rules: Vec<MatchReplaceRule>,
+    ) -> anyhow::Result<()> {
+        self.set_pending_rules(scope_rules, match_replace_rules)
+            .await;
+        self.start(config).await
+    }
 }
 
 #[cfg(test)]
@@ -276,6 +358,33 @@ mod tests {
         assert_eq!(s.state, ProxyState::Stopped);
         assert!(s.listener_addr.is_none());
         assert!(s.ca_fingerprint.is_none());
+    }
+
+    /// `set_pending_rules` + `take_pending_rules` round-trips:
+    /// pending rules set via `set_pending_rules` come back via
+    /// `take_pending_rules`, and `take_pending_rules` drains
+    /// the pending fields (a second take returns empty
+    /// `Vec`s).
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn pending_rules_round_trip() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let h = ProxyHandle::new(tmp.path());
+        let rules = vec![bk_core::ScopeRule {
+            kind: bk_core::ScopeRuleKind::Host,
+            pattern: "acme.bb".to_string(),
+            action: bk_core::MatchAction::InScope,
+            label: "primary".to_string(),
+            priority: 0,
+        }];
+        h.set_pending_rules(rules.clone(), vec![]).await;
+        let (taken_scope, taken_mr) = h.take_pending_rules().await;
+        assert_eq!(taken_scope.len(), 1);
+        assert_eq!(taken_scope[0].label, "primary");
+        assert!(taken_mr.is_empty());
+        // The take drains the fields.
+        let (scope2, mr2) = h.take_pending_rules().await;
+        assert!(scope2.is_empty());
+        assert!(mr2.is_empty());
     }
 
     /// `start` is idempotent: a second call while running

@@ -9,7 +9,7 @@
 use crate::events::{channel as events_channel, EventReceiver, EventSender};
 use crate::mcp_events::{channel as mcp_channel, McpEvent, McpEventReceiver, McpEventSender};
 use crate::projects::Projects;
-use bk_core::{ExchangeId, HttpExchange, Project, ProjectId, Tag, TagId};
+use bk_core::{ExchangeId, HttpExchange, Project, ProjectId, ProjectSettings, Tag, TagId};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -385,10 +385,84 @@ impl Engine {
 
     /// Update the cached `Project` (info + settings) for an open
     /// project. Used by the Phase 6 scope-rule and match & replace
-    /// Tauri commands to write new rules. **No SQLite write happens
-    /// here** — settings are in-memory only; persistence is a v0.5+
-    /// follow-up. See `bk_engine::projects` module docs.
+    /// Tauri commands to write new rules.
+    ///
+    /// **Phase 6 Part C (C-A.1):** the in-memory update is now
+    /// paired with a SQLite write via `Engine::save_settings`.
+    /// `update_project` itself stays in-memory only (a "dry
+    /// update" path for tests / previews); the CRUD Tauri
+    /// commands call `save_settings` after `update_project` to
+    /// persist.
     pub fn update_project(&self, project: Project) -> crate::Result<()> {
         self.projects.update_settings(project)
+    }
+
+    /// Persist the current `ProjectSettings` for an open project
+    /// to the project's SQLite `projects.settings_json` column
+    /// (Phase 6 Part C, §C-A.1). The CRUD Tauri commands call
+    /// this after the in-memory `update_project` to make the
+    /// mutation durable across engine restarts.
+    ///
+    /// **In-memory + on-disk both updated:** this method writes
+    /// to SQLite AND updates the in-memory `ProjectSettings`
+    /// cache (the `ProjectSettings` field on the cached
+    /// `Project`). The in-memory update is the "current session
+    /// sees the change" guarantee; the on-disk write is the
+    /// "next session sees the change" guarantee.
+    ///
+    /// **Defensive semantics:** if the SQLite write fails, the
+    /// in-memory update is still rolled back (the in-memory
+    /// update happens AFTER the SQLite write). The error is
+    /// surfaced to the caller; the UI shows a "save failed"
+    /// toast. v0.5+ followup: transactional update with
+    /// automatic rollback.
+    pub fn save_settings(&self, id: ProjectId, settings: &ProjectSettings) -> crate::Result<()> {
+        let pool = self
+            .projects
+            .get(id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(id.to_string()))?;
+        bk_store::projects::update_settings(&pool, id, settings)?;
+        // Update the in-memory cache too (the cached `Project`'s
+        // `settings` field). Without this, a subsequent
+        // `get_project(id)` returns the pre-save value.
+        if let Some(mut cached) = self.projects.get_settings(id) {
+            cached.settings = settings.clone();
+            self.projects.update_settings(cached)?;
+        }
+        Ok(())
+    }
+
+    /// List the `replay_history` entries for a given tab
+    /// (Phase 6 Part C, §C-A.4). Returns entries ordered by
+    /// `sequence_within_tab` ASC. Used by the UI's
+    /// `ReplayStore.openTab` action to rehydrate the tab's
+    /// in-memory history.
+    pub fn list_replay_history(
+        &self,
+        project_id: ProjectId,
+        tab_id: &str,
+    ) -> crate::Result<Vec<bk_store::replay_history::ReplayHistoryEntry>> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::replay_history::list_by_tab(&pool, tab_id).map_err(Into::into)
+    }
+
+    /// Append a `replay_history` entry (Phase 6 Part C,
+    /// §C-A.4). Used by the UI's `ReplayStore.appendSend`
+    /// action. The caller (the Tauri command) mints the `id`
+    /// and `sequence_within_tab` (the tab's current sequence
+    /// count).
+    pub fn append_replay_history(
+        &self,
+        project_id: ProjectId,
+        entry: &bk_store::replay_history::ReplayHistoryEntry,
+    ) -> crate::Result<()> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::replay_history::insert(&pool, entry).map_err(Into::into)
     }
 }
