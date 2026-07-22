@@ -146,6 +146,8 @@ pub fn run() {
             commands::core::stop_proxy,
             commands::core::update_notes,
             commands::search::search_exchanges,
+            commands::replay::open_replay_tab,
+            commands::replay::send_replay,
             agent::agent_start,
             agent::agent_confirm_write,
             agent::agent_cancel,

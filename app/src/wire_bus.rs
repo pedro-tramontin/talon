@@ -57,8 +57,10 @@ use crate::wire::{WireEventSeq, WIRE_EVENT_LABEL};
 
 /// The Tauri webview label, matches the existing
 /// `WEBVIEW_LABEL` constant in `agent.rs` (single window,
-/// Tauri 2 default).
-const WEBVIEW_LABEL: &str = "main";
+/// pinned by the Tauri config). Re-exported as `pub(crate)`
+/// so other modules (e.g. `commands::replay`) can emit to
+/// the same webview without duplicating the string.
+pub(crate) const WEBVIEW_LABEL: &str = "main";
 
 /// Handle to the running fan-in. Held in `tauri::State` so
 /// the setup hook (or a future shutdown hook) can cancel it

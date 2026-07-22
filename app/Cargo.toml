@@ -44,6 +44,11 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 dirs = "6.0"
 tempfile = "3.10"
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 
 [dev-dependencies]
 bk-store = { workspace = true }
