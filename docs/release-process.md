@@ -19,12 +19,13 @@ Configure these in **Settings → Secrets and variables → Actions**. The list 
 |---|---|---|---|
 | `RELEASE_PLEASE_TOKEN` | `release-please.yml` | **Yes** | A fine-grained PAT scoped to the talon repo with `Contents: Read and write` and `Pull requests: Read and write`. Do NOT use the default `GITHUB_TOKEN` — GitHub intentionally blocks the default token from triggering downstream workflows, which means a tag push won't fire `release.yml`. This is the bug that shipped v0.1.0 of vaultenv with zero assets. |
 | `GITHUB_TOKEN` | `release.yml` (each OS job) | Auto | The default per-run token. tauri-action uses it with `contents: write` to attach bundles to the GitHub Release. No setup needed. |
-| `APPLE_CERTIFICATE` | `release.yml` (macOS job) | No (optional) | Base64-encoded `.p12` Developer ID Application certificate. Without this, the macOS `.dmg` is unsigned and Apple will warn on first launch. Recommended for public releases. |
+| `APPLE_CERTIFICATE` | `release.yml` (macOS job) | No (optional) | Base64-encoded `.p12` Developer ID Application certificate. **Without this, the macOS `.dmg` is unsigned** (the unsigned build path runs — see §4.3a for the prior failure mode where an empty value made the whole job fail). Recommended for public releases. |
 | `APPLE_CERTIFICATE_PASSWORD` | `release.yml` (macOS job) | Only if `APPLE_CERTIFICATE` set | Password for the `.p12`. |
 | `APPLE_SIGNING_IDENTITY` | `release.yml` (macOS job) | Only if `APPLE_CERTIFICATE` set | `Developer ID Application: <Your Name> (<TEAM_ID>)`. |
 | `APPLE_ID` | `release.yml` (macOS job) | Only if `APPLE_CERTIFICATE` set | Apple ID email for notarisation. |
 | `APPLE_PASSWORD` | `release.yml` (macOS job) | Only if `APPLE_CERTIFICATE` set | App-specific password (not your Apple ID password). |
 | `APPLE_TEAM_ID` | `release.yml` (macOS job) | Only if `APPLE_CERTIFICATE` set | 10-character Apple Developer Team ID. |
+| `KEYCHAIN_PASSWORD` | `release.yml` (macOS job, signed path) | Only if `APPLE_CERTIFICATE` set | Arbitrary password used to lock the temporary `build.keychain` that holds the imported `.p12` for the duration of the job. Any value works — pick something long but not the same as the `.p12` password. |
 
 The Windows code-signing certificate (`.pfx`) is **not** yet wired in — Talon is unsigned on Windows. The artifact is installable, but SmartScreen will warn on first launch. Adding the cert is a follow-up tracked separately.
 
@@ -227,17 +228,46 @@ gh run rerun 29841900230 --failed
 
 ### 4.3 One OS build fails but the others succeed
 
-`release.yml` is `fail-fast: false` in spirit — each OS job is independent and uploads its assets to the same draft Release as they finish. So if, say, the macOS build fails (e.g. signing cert expired), you get a Release with the Linux .deb + Windows .msi but no .dmg.
+`release.yml` is `fail-fast: false` in spirit — each OS job is independent and uploads its assets to the same draft Release as they finish. So if, say, the macOS build fails, you get a Release with the Linux .deb + Windows .msi but no .dmg.
 
-Fix: address the underlying issue (renew the cert, fix the build error), delete the tag, re-run. The new release.yml run will upload the missing bundle. The existing bundles will be **re-uploaded** with the same filenames — GitHub deduplicates by filename in the UI.
+Fix: address the underlying issue (renew the cert, fix the build error), then **re-run the failed job on the same tag** rather than deleting the tag and re-pushing. The new run will upload the missing bundle. The existing bundles will be **re-uploaded** with the same filenames — GitHub deduplicates by filename in the UI.
 
 ```bash
-git push origin :refs/tags/v0.2.0
-git push origin v0.2.0   # release-please won't recreate; you need to
-                          # re-run release-please explicitly, OR fix
-                          # the underlying commit and let release-please
-                          # open a new release PR (then re-merge + retag).
+# Find the failed run for the tag
+gh run list --workflow="Release" --json databaseId,conclusion,headBranch \
+  --jq '.[] | select(.headBranch == "v0.2.0") | "\(.databaseId) \(.conclusion)"'
+
+# Re-run just the macOS job from the failed run
+gh run rerun <RUN_ID> --failed
 ```
+
+The previous version of this section recommended `git push origin :refs/tags/v0.2.0 && git push origin v0.2.0`. **Do not do that** — release-please will not recreate an existing tag, and force-pushing tags can confuse downstream tooling. Re-running the failed job is the only correct recovery.
+
+### 4.3a `SecKeychainItemImport: One or more parameters passed to a function were not valid` (macOS job fails, no .dmg ships)
+
+This was the failure mode for **every release from v0.1.0 through v0.1.2**. The macOS job's final log line was always:
+
+```
+security: SecKeychainItemImport: One or more parameters passed to a function were not valid.
+failed to bundle project: failed codesign application: failed to run command security import: failed to import keychain certificate
+Error: Command "tauri ["build","--bundles","app,dmg","--target","universal-apple-darwin"]" failed with exit code 1
+```
+
+**Root cause:** the old `release.yml` unconditionally passed `APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}` to the macOS job. When the secret was **not configured** (which has been the case for every talon release so far), GitHub Actions substitutes an empty string. Tauri 2's macOS bundler reads the env var at bundle time, sees it's set, and calls `security import` on the empty value — which fails with the `SecKeychainItemImport` error above. The whole `tauri build` then aborts, so no `.app` or `.dmg` is produced. Meanwhile, release-please has already published the GitHub Release from the tag push, so the release ships with only the Linux + Windows assets.
+
+**Fix (in `release.yml`):** the macOS job now has three mutually-exclusive steps:
+
+- `Import Apple Developer Certificate` — runs only when `secrets.APPLE_CERTIFICATE != ''`; does the manual `security import` into a temporary `build.keychain`.
+- `Build Tauri bundle (macOS, signed) — tauri-action` — runs only when the secret is present; invokes `tauri-action@v0` with all the `APPLE_*` env vars set.
+- `Build Tauri bundle (macOS, unsigned)` — runs only when the secret is **absent**; invokes `tauri-action@v0` with no `APPLE_*` env vars at all, so Tauri 2's macOS bundler skips the cert-import path entirely and produces an unsigned `.app` + `.dmg`.
+
+Result: macOS assets ship on **every** release, signed or not. Unsigned .dmg is the right shape for now — Apple Gatekeeper will warn on first launch ("unidentified developer"), but the app runs.
+
+**Why two `if:`-gated steps instead of conditionally clearing env vars:** GitHub Actions evaluates a step's `if:` before its `env:` block takes effect, so `env.APPLE_CERTIFICATE != ''` is not a usable gate. The check has to be on `secrets.APPLE_CERTIFICATE` (the secret), and to keep the env block "all or nothing" you need two separate steps. That's why the unsigned tauri-action call is in its own step rather than conditionally unsetting vars on the signed step.
+
+**Verification:** the next release (or a manual re-run of the v0.1.2 release workflow after this fix lands) should attach the `Talon_<version>_universal.dmg` and `Talon.app` to the release. Run `gh release view v0.X.Y --json assets --jq '.assets | map(.name)'` and check both filenames are present.
+
+**Re-recovering the v0.1.2 release:** after this fix lands on `main`, you can either (a) cut v0.1.3 (which will have the fix automatically) or (b) re-run the failed v0.1.2 macOS job against the existing v0.1.2 tag — `gh run rerun 29858434755 --failed`. The new macOS run will upload the missing `.dmg` and `.app` to the existing v0.1.2 release.
 
 ### 4.4 The Release body is wrong or stale
 
