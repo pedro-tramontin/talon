@@ -20,15 +20,35 @@
 //
 // The on-wire shape (from `bk-events::WireEvent`):
 //   { kind: "engine_event" | "agent_event" | "proxy_event",
-//     payload: <serde_json::Value>,
-//     seq: number }
+//   { kind: "engine_event" | "agent_event" | "proxy_event" | "replay_event",
+//     payload: <kind-specific JSON>, seq: <monotonic u64> }
 //
 // The kind strings are pinned by the `WireEventKind::as_str` method
 // in `crates/bk-events/src/lib.rs` and must match here.
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type WireEventKind = "engine_event" | "agent_event" | "proxy_event";
+export type WireEventKind =
+  | "engine_event"
+  | "agent_event"
+  | "proxy_event"
+  | "replay_event";
+
+/**
+ * Payload of a `replay_event` WireEvent. Mirrors the Rust
+ * `bk_events::ReplayEvent` shape. The `tab_id` is the
+ * client-generated UUID the `ReplayStore` uses to identify
+ * a tab; the Rust side does not generate it (it just
+ * round-trips whatever the JS dispatch sent in the future
+ * for cross-tab sync; for v1 the `tab_id` is `""` because
+ * the send path is synchronous via `send_replay` IPC).
+ */
+export interface ReplayEventPayload {
+  readonly tab_id: string;
+  readonly kind: "send_complete" | "send_failed";
+  readonly exchange_id: string | null;
+  readonly error: string | null;
+}
 
 export interface WireEvent {
   readonly kind: WireEventKind;

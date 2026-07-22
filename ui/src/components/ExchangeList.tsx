@@ -36,8 +36,9 @@ import {
   useFilteredExchanges,
 } from "../state/exchange";
 import { useUiStore, FTS_DEBOUNCE_MS } from "../state/ui";
+import { useReplayStore } from "../state/replay";
 import { useProjectStore } from "../state/project";
-import { searchExchanges } from "../api";
+import { getExchange, searchExchanges } from "../api";
 import type { ExchangeSummary } from "../types/domain";
 import type { ExchangeId } from "../types/ids";
 import { LEFT_RAIL_PX } from "../routes/Capture";
@@ -302,8 +303,7 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
               if (!row) return null;
               const isSelected = row.id === selectedId;
               return (
-                <button
-                  type="button"
+                <div
                   key={row.id}
                   data-testid="exchange-list-row"
                   data-row-id={row.id}
@@ -312,17 +312,28 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
                     setSelectedId(row.id as ExchangeId);
                   }}
                   title={row.summary}
-                  className={`absolute left-0 top-0 flex w-full flex-col justify-center px-3 text-left text-sm transition-colors ${
+                  className={`group absolute left-0 top-0 flex w-full cursor-pointer flex-col justify-center px-3 text-left text-sm transition-colors ${
                     isSelected ? SELECTED_ROW_CLASS : UNSELECTED_ROW_CLASS
                   }`}
                   style={{
                     height: `${vi.size}px`,
                     transform: `translateY(${vi.start}px)`,
                   }}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setSelectedId(row.id as ExchangeId);
+                    }
+                  }}
                 >
-                  <span className="truncate font-mono text-xs">
-                    {row.summary}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="flex-1 truncate font-mono text-xs">
+                      {row.summary}
+                    </span>
+                    <ReplayButton rowId={row.id as ExchangeId} />
+                  </div>
                   <span
                     className={`truncate text-[10px] ${
                       isSelected ? "text-slate-600" : "text-slate-500"
@@ -330,12 +341,88 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
                   >
                     {formatTimestamp(row.timestamp)}
                   </span>
-                </button>
+                </div>
               );
             })}
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Replay button. Visible on row hover only. Clicking it:
+ *   1. Looks up the `ExchangeDetail` from the in-memory
+ *      cache (`useExchangeStore.getState().getDetail`).
+ *   2. If the cache misses, falls back to a
+ *      `getExchange(projectId, id)` IPC round-trip and
+ *      stores the result via `putDetail` so the next click
+ *      is instant.
+ *   3. Calls `useReplayStore.openTab(detail)` + flips
+ *      `useUiStore.setMode("replay")`.
+ *
+ * The `e.stopPropagation()` keeps the parent row's
+ * `onClick` (which sets `selectedId`) from firing — the
+ * Replay action is a separate intent from "open the
+ * capture detail".
+ */
+function ReplayButton({ rowId }: { rowId: ExchangeId }) {
+  const openTab = useReplayStore((s) => s.openTab);
+  const setMode = useUiStore((s) => s.setMode);
+  const activeProjectId = useProjectStore((s) => s.activeProjectId);
+  const getDetail = useExchangeStore((s) => s.getDetail);
+  const putDetail = useExchangeStore((s) => s.putDetail);
+
+  return (
+    <button
+      type="button"
+      data-testid="exchange-list-replay-button"
+      onClick={(e) => {
+        e.stopPropagation();
+        // Synchronous cache lookup.
+        const cached = getDetail(rowId);
+        if (cached) {
+          openTab({
+            exchangeId: cached.meta.id,
+            summary: cached.meta.summary,
+            request: cached.request,
+            response: cached.response,
+            projectId: cached.meta.project_id,
+          });
+          setMode("replay");
+          return;
+        }
+        // Cache miss: fetch from the engine. The user's
+        // active project id is the source of truth for
+        // which DB the engine queries.
+        if (!activeProjectId) {
+          console.error("Replay: no active project; cannot fetch detail");
+          return;
+        }
+        getExchange(activeProjectId, rowId)
+          .then((detail) => {
+            if (!detail) {
+              console.error("Replay: exchange not found in engine", rowId);
+              return;
+            }
+            putDetail(detail);
+            openTab({
+              exchangeId: detail.meta.id,
+              summary: detail.meta.summary,
+              request: detail.request,
+              response: detail.response,
+              projectId: detail.meta.project_id,
+            });
+            setMode("replay");
+          })
+          .catch((err) => {
+            console.error("Replay: getExchange failed", err);
+          });
+      }}
+      className="invisible text-xs text-slate-500 opacity-0 hover:text-accent group-hover:visible group-hover:opacity-100 focus-visible:visible focus-visible:opacity-100"
+    >
+      Replay
+    </button>
   );
 }

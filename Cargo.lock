@@ -486,6 +486,8 @@ dependencies = [
  "anyhow",
  "async-stream",
  "bk-core",
+ "bk-engine",
+ "bk-store",
  "bytes",
  "chrono",
  "clap",

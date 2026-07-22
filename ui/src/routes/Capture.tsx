@@ -28,11 +28,13 @@
 
 import { useEffect } from "react";
 import { useProjectStore } from "../state/project";
+import { useUiStore } from "../state/ui";
 import { exchangeStore } from "../state/exchange";
 import { getWireClient } from "../lib/ws";
 import { ExchangeDetail } from "../components/ExchangeDetail";
 import { ExchangeList } from "../components/ExchangeList";
 import { RightRail } from "../components/RightRail";
+import { ReplayView } from "../components/ReplayView";
 import type {
   ExchangeDetail as ExchangeDetailType,
   ExchangeSummary,
@@ -173,13 +175,18 @@ function ExchangeLeftRail() {
 }
 
 /**
- * Main column. Renders the §4.6 `<ExchangeDetail />` panel
- * (which shows the empty state when no row is selected).
- * The list and the detail share the same store signal:
- * clicking a row in `<ExchangeList />` sets `selectedId`,
- * and the detail reads it.
+ * Main column. Renders either the §4.6 `<ExchangeDetail />`
+ * (the default for the Capture route) OR the Phase 5
+ * `<ReplayView />` based on the UI store's `mode` field.
+ * The left rail (`<ExchangeList />`) and the right rail
+ * (`<RightRail />`) stay put; only the center column
+ * changes. The list and the detail share the same store
+ * signal: clicking a row in `<ExchangeList />` sets
+ * `selectedId`, and the detail reads it.
  */
 function CaptureMain() {
+  const mode = useUiStore((s) => s.mode);
+  if (mode === "replay") return <ReplayView />;
   return <ExchangeDetail />;
 }
 
