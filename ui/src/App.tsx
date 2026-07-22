@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { greet, type Greeting } from "./api";
 import { AgentPanel } from "./components/AgentPanel";
 import { Capture } from "./routes/Capture";
+import { SettingsModal } from "./components/SettingsModal";
 import {
   agentStore,
   CONFIRM_TIMEOUT_SECS,
@@ -283,6 +284,12 @@ export function App() {
       )}
 
       <AgentPanel />
+
+      {/* Phase 6 §6.7: the Settings modal hosts the M&R editor.
+       * The modal is unmounted by the component itself when
+       * `settingsOpen` is false; mounting it here just gives the
+       * store-driven open/close a stable DOM presence. */}
+      <SettingsModal />
     </div>
   );
 }
