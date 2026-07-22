@@ -14,8 +14,20 @@
 // the M&R editor degrades gracefully when no project is
 // open (the table renders an empty row, the Add button
 // is disabled).
+//
+// ## Phase 7 C-B.2 — "Test" button (URL preview)
+//
+// A new "Test" section above the table: the user types a
+// sample URL + clicks "Test" + sees the URL after the
+// active rules have been applied (via the JS-side
+// `match_replace.ts` engine). The test runs client-side —
+// no Tauri round-trip for what is a UI affordance. The
+// engine is a JS mirror of the Rust `MatchReplace::apply`,
+// not the source of truth; the wire behavior is the
+// Rust engine's. The "Test" button is a best-effort UI
+// preview.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useProjectStore } from "../state/project";
 import { useUiStore } from "../state/ui";
 import {
@@ -23,12 +35,21 @@ import {
   listMatchReplaceRules,
   removeMatchReplaceRule,
 } from "../api";
+import { matchReplaceApplyUrl } from "../lib/match_replace";
 import type { MatchReplaceRule } from "../types/domain";
 
 export function MatchReplaceEditor() {
   const rules = useUiStore((s) => s.matchReplaceRules);
   const setRules = useUiStore((s) => s.setMatchReplaceRules);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
+
+  // Phase 7 C-B.2: "Test" button state. The sample URL
+  // and the result of running it through the engine. The
+  // result is `null` until the user clicks "Test" (or
+  // until the rules change after a click — see the
+  // `useEffect` below).
+  const [testUrl, setTestUrl] = useState("");
+  const [testResult, setTestResult] = useState<string | null>(null);
 
   // Re-fetch when the active project changes. Same
   // shape as the `ScopeRuleEditor` effect; the rules
@@ -75,6 +96,21 @@ export function MatchReplaceEditor() {
     }
   };
 
+  // Phase 7 C-B.2: when the rules change after a test
+  // was clicked, the result is stale. Re-run the engine
+  // so the preview tracks the rules. If the user hasn't
+  // clicked Test yet, the result stays `null` (no
+  // preview until the user opts in).
+  //
+  // `testResult` is intentionally excluded from the deps:
+  // including it would re-run the engine every time the
+  // result string is recomputed (infinite setState loop).
+  useEffect(() => {
+    if (testResult !== null) {
+      setTestResult(matchReplaceApplyUrl(testUrl, rules));
+    }
+  }, [rules, testUrl]);
+
   return (
     <div data-testid="match-replace-editor">
       <button
@@ -85,6 +121,56 @@ export function MatchReplaceEditor() {
       >
         + Add rule
       </button>
+      {/* Phase 7 C-B.2: the "Test" section. The user
+          types a sample URL + clicks "Test" + sees the
+          URL after the active rules have been applied.
+          The button is disabled until the user enters
+          a URL. */}
+      <div
+        data-testid="match-replace-editor-test"
+        className="mb-3 flex flex-col gap-1 rounded border border-slate-700 p-2"
+      >
+        <label className="text-xs text-slate-400">
+          Test a URL against the rules above:
+        </label>
+        <div className="flex gap-1">
+          <input
+            data-testid="match-replace-editor-test-url"
+            type="text"
+            value={testUrl}
+            onChange={(e) => setTestUrl(e.target.value)}
+            placeholder="https://example.com/api/v1/users"
+            className="flex-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-xs text-slate-200"
+          />
+          <button
+            data-testid="match-replace-editor-test-button"
+            onClick={() => {
+              if (testUrl === "") {
+                setTestResult(null);
+                return;
+              }
+              setTestResult(matchReplaceApplyUrl(testUrl, rules));
+            }}
+            disabled={testUrl === ""}
+            className="rounded border border-slate-700 bg-slate-800 px-3 py-1 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-40"
+          >
+            Test
+          </button>
+        </div>
+        {testResult !== null && (
+          <div
+            data-testid="match-replace-editor-test-result"
+            className="rounded bg-slate-900 px-2 py-1 font-mono text-xs text-slate-300"
+          >
+            {testResult}
+          </div>
+        )}
+        {testResult === null && testUrl !== "" && (
+          <div className="text-xs italic text-slate-500">
+            Click Test to preview the result.
+          </div>
+        )}
+      </div>
       <table className="w-full text-xs">
         <thead>
           <tr className="text-left text-slate-400">
