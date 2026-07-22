@@ -59,22 +59,22 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The three top-level sources of events Talon exposes to the UI.
+/// The top-level sources of events Talon exposes to the UI.
 ///
 /// The variant names are PascalCase Rust; the on-wire string forms
 /// are the **snake_case** tag values listed in the variant docs
-/// (set via `#[serde(rename_all = "snake_case")]`). The v1 set is
-/// pinned: the design contract is "3 kinds, 3 string tags". Future
-/// phases can add new kinds (e.g. `mcp_event`, `fuzz_event`) by
-/// appending a variant here AND updating
-/// `ui/src/lib/ws.ts` to handle the new tag — the wire shape is
-/// intentionally additive.
+/// (set via `#[serde(rename_all = "snake_case")]`). The v1 set was
+/// "3 kinds, 3 string tags"; Phase 5 added `Replay` for the replay
+/// feature's `replay_event` channel. Future phases can add more kinds
+/// (e.g. `mcp_event`, `fuzz_event`) by appending a variant here AND
+/// updating `ui/src/lib/ws.ts` to handle the new tag — the wire
+/// shape is intentionally additive.
 ///
 /// `#[non_exhaustive]` is on the enum so a downstream match that
 /// forgets the new variant fails to compile at the consumer site
 /// (the `WireClient` in `ui/src/lib/ws.ts` has a switch on `kind`
 /// that will need a new arm).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WireEventKind {
@@ -87,6 +87,9 @@ pub enum WireEventKind {
     /// A `ProxyEvent` (proxy started/stopped, request
     /// forwarded). On-wire tag: `"proxy_event"`.
     ProxyEvent,
+    /// A `ReplayEvent` (replay tab opened, request sent, response
+    /// received, error). On-wire tag: `"replay_event"`.
+    Replay(ReplayEvent),
 }
 
 impl WireEventKind {
@@ -98,8 +101,47 @@ impl WireEventKind {
             Self::EngineEvent => "engine_event",
             Self::AgentEvent => "agent_event",
             Self::ProxyEvent => "proxy_event",
+            Self::Replay(_) => "replay_event",
         }
     }
+}
+
+/// The payload of a `WireEventKind::Replay(_)` variant. Carries
+/// the per-tab `tab_id`, the sub-event `kind`, the `exchange_id`
+/// of the new replay exchange (if the send succeeded), and an
+/// optional `error` string (if the send failed).
+///
+/// The `tab_id` is the per-tab UUID the `ReplayStore` generates
+/// client-side; the Rust side does not generate it. Cross-tab
+/// sync consumers use the `tab_id` to route the event to the
+/// right tab's UI.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ReplayEvent {
+    /// The UUID v4 of the replay tab (matches `ReplayTab.id` in
+    /// the UI store).
+    pub tab_id: String,
+    /// The sub-event kind.
+    pub kind: ReplayEventKind,
+    /// The `ExchangeId` of the new replay exchange, if the send
+    /// succeeded. `None` on failure.
+    pub exchange_id: Option<bk_core::ExchangeId>,
+    /// The error message, if the send failed. `None` on success.
+    pub error: Option<String>,
+}
+
+/// The sub-event kind of a `ReplayEvent`. Tag-named via
+/// `#[serde(tag = "kind", rename_all = "snake_case")]` so the
+/// on-wire shape is `{"tab_id": ..., "kind": "send_complete", ...}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayEventKind {
+    /// The user clicked Send and the request + response completed
+    /// successfully. The `exchange_id` field is `Some(_)`.
+    SendComplete,
+    /// The user clicked Send and the request failed (network
+    /// error, validation error, etc). The `error` field is
+    /// `Some(_)`.
+    SendFailed,
 }
 
 impl std::fmt::Display for WireEventKind {

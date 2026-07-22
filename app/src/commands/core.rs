@@ -204,7 +204,12 @@ pub async fn open_project(
 /// (typos, "foo bar", empty-after-trim that already passed the
 /// first check, "http://..." URLs) at the Tauri IPC boundary
 /// rather than as a confusing deep error in the proxy path.
-fn is_valid_host_shape(s: &str) -> bool {
+///
+/// `pub(crate)` so [`crate::commands::replay::send_replay`]
+/// can reuse the same validation for the Replay feature's
+/// `target_host` check (Phase 5; the plan file's §5.2 said
+/// "validate target_host with the same helper").
+pub(crate) fn is_valid_host_shape(s: &str) -> bool {
     if s.is_empty() || s.len() > 253 {
         return false;
     }

@@ -6,14 +6,18 @@
 //!   `proxy_status`, `start_proxy`, `stop_proxy`,
 //!   `update_notes`).
 //! - [`search`]: §4.8 `search_exchanges` (FTS5 wrapper).
+//! - [`replay`]: Phase 5 §5.1 + §5.2 commands
+//!   (`open_replay_tab`, `send_replay`).
 //!
 //! The Tauri `generate_handler!` macro in `app/src/lib.rs`
 //! references each command by its module path (e.g.
 //! `commands::core::open_project`,
-//! `commands::search::search_exchanges`); see that file
+//! `commands::search::search_exchanges`,
+//! `commands::replay::open_replay_tab`); see that file
 //! for the canonical registration list.
 
 pub mod core;
+pub mod replay;
 pub mod search;
 
 pub use core::EngineArc;
