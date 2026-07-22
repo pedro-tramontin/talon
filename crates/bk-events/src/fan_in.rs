@@ -277,7 +277,7 @@ async fn forward_loop(
                         // use 0 as the "haven't seen anything"
                         // sentinel.
                         let seq = seq_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                        let ev = WireEvent::new(kind, value, seq);
+                        let ev = WireEvent::new(kind.clone(), value, seq);
                         // The sink may have no receivers (the
                         // Tauri shell hasn't started the
                         // webview yet) — `send` returns Err
@@ -471,7 +471,7 @@ mod tests {
         // don't check exact counts (cross-source ordering is
         // not guaranteed), only that none of the 3 sources
         // was dropped entirely.
-        let kinds: HashSet<WireEventKind> = received.iter().map(|e| e.kind).collect();
+        let kinds: HashSet<WireEventKind> = received.iter().map(|e| e.kind.clone()).collect();
         assert!(kinds.contains(&WireEventKind::EngineEvent));
         assert!(kinds.contains(&WireEventKind::AgentEvent));
         assert!(kinds.contains(&WireEventKind::ProxyEvent));

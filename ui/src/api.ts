@@ -149,6 +149,8 @@ import type {
 import type {
   ExchangeDetail,
   ExchangeListPage,
+  ExchangeRequest,
+  ExchangeResponse,
   ProjectMeta,
   ProxyStatus,
 } from "./types/domain";
@@ -250,5 +252,39 @@ export async function searchExchanges(
     projectId: project_id,
     query,
     limit,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Replay (§5.1, §5.2, §5.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Payload returned by `open_replay_tab(exchange_id)`. The UI
+ * uses this to seed a new `ReplayTab` in the ReplayStore.
+ */
+export interface ReplayTabDescriptor {
+  readonly source_exchange_id: DomainExchangeId;
+  readonly project_id: DomainProjectId;
+  readonly request: ExchangeRequest;
+  readonly original_response: ExchangeResponse | null;
+  readonly body_truncated: boolean;
+}
+
+export async function openReplayTab(
+  exchangeId: DomainExchangeId,
+): Promise<ReplayTabDescriptor> {
+  return await invoke<ReplayTabDescriptor>("open_replay_tab", {
+    exchangeId,
+  });
+}
+
+export async function sendReplay(
+  projectId: DomainProjectId,
+  request: ExchangeRequest,
+): Promise<ExchangeDetail> {
+  return await invoke<ExchangeDetail>("send_replay", {
+    projectId,
+    requestJson: JSON.stringify(request),
   });
 }
