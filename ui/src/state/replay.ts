@@ -28,11 +28,31 @@
 // `ReplayHistoryPanel` formats it via `toLocaleTimeString`
 // at render time, so the round-trip through `Date` is
 // lossless).
+//
+// ## Phase 7 C-B.1 — replay history persistence (UI side)
+//
+// The per-tab `history` is now persisted to SQLite via the
+// `Engine::append_replay_history` / `Engine::list_replay_history`
+// Tauri commands (added in Phase 7 C-A.4, PR #73). The store
+// rehydrates `history` from SQLite on `openTab` (the
+// same pattern as `listMatchReplaceRules` in the scope/M&R
+// store). The `appendSend` action persists each new entry
+// after the in-memory update. **This is the minimum-viable
+// persistence** — on app restart, tabs are empty (the
+// in-memory `tabs: ReplayTab[]` is not persisted); the
+// user re-opens a tab from the exchange list, and the
+// history is reloaded from SQLite. The v0.5+ "re-open tabs
+// on app restart" follow-up is out of scope for Phase 7.
 
 import { createStore, useStore } from "zustand";
 import type { StoreApi } from "zustand/vanilla";
 import type { ExchangeRequest, ExchangeResponse } from "../types/domain";
-import type { ExchangeId, ProjectId } from "../types/ids";
+import { asExchangeId, type ExchangeId, type ProjectId } from "../types/ids";
+import {
+  appendReplayHistory,
+  listReplayHistory,
+  type ReplayHistoryEntry,
+} from "../api";
 
 /**
  * One open replay tab. The user has a `draftRequest` they
@@ -166,6 +186,37 @@ function createReplayStore() {
         projectId: source.projectId ?? null,
       };
       set((s) => ({ tabs: [...s.tabs, tab], activeTabId: id }));
+
+      // Phase 7 C-B.1: rehydrate the tab's `history` from
+      // SQLite. This is async (a Tauri IPC call) and runs
+      // in the background — the tab is already open +
+      // active before the history populates. If the
+      // project_id is null, we skip (the entry shape
+      // requires it). If the IPC errors, the tab stays
+      // empty (the per-send `appendSend` will still
+      // persist future entries once the project is set).
+      if (tab.projectId) {
+        listReplayHistory(tab.projectId, id)
+          .then((entries) => {
+            if (get().tabs.find((t) => t.id === id)) {
+              // Tab still exists; rehydrate.
+              set((s) => ({
+                tabs: s.tabs.map((t) =>
+                  t.id === id
+                    ? {
+                        ...t,
+                        history: entries.map(replayEntryToHistoryItem),
+                      }
+                    : t,
+                ),
+              }));
+            }
+          })
+          .catch((e) => {
+            console.error("listReplayHistory failed in openTab:", e);
+          });
+      }
+
       return id;
     },
 
@@ -189,6 +240,10 @@ function createReplayStore() {
     },
 
     appendSend(id, request, response, exchangeId) {
+      const tab = get().tabs.find((t) => t.id === id);
+      if (!tab) return;
+      const sequenceWithiNtab = tab.history.length;
+      const newHistoryItem = { request, response, timestamp: new Date(), exchangeId };
       set((s) => ({
         tabs: s.tabs.map((t) =>
           t.id === id
@@ -196,14 +251,39 @@ function createReplayStore() {
                 ...t,
                 latestResponse: response,
                 latestReplayId: exchangeId,
-                history: [
-                  ...t.history,
-                  { request, response, timestamp: new Date(), exchangeId },
-                ],
+                history: [...t.history, newHistoryItem],
               }
             : t,
         ),
       }));
+
+      // Phase 7 C-B.1: persist the new history entry to
+      // SQLite. The Tauri command requires a project_id;
+      // if the tab doesn't have one, we skip (the entry
+      // exists in-memory only; the user's view is still
+      // consistent for the current session). The exchangeId
+      // round-trip is best-effort: we use the response's
+      // `id` if available, else the request's `id`, else
+      // generate a fresh UUID. The Rust side has its own
+      // request_exchange_id + response_exchange_id fields
+      // — for the v1, both point at the same `exchangeId`
+      // (the new replay's exchange id, which is what the
+      // `ExchangeStore.putDetail` call writes).
+      if (tab.projectId) {
+        const entryId = asExchangeId(exchangeId ?? crypto.randomUUID());
+        const entry: ReplayHistoryEntry = {
+          id: entryId,
+          project_id: tab.projectId,
+          tab_id: id,
+          request_exchange_id: entryId,
+          response_exchange_id: response && exchangeId ? entryId : null,
+          timestamp: newHistoryItem.timestamp.toISOString(),
+          sequence_within_tab: sequenceWithiNtab,
+        };
+        appendReplayHistory(tab.projectId, entry).catch((e) => {
+          console.error("appendReplayHistory failed in appendSend:", e);
+        });
+      }
     },
 
     setSending(id, sending) {
@@ -212,6 +292,43 @@ function createReplayStore() {
       }));
     },
   }));
+}
+
+/**
+ * Convert a `ReplayHistoryEntry` (the Rust wire shape) to
+ * the in-memory `history[0]` shape used by the `ReplayTab`.
+ * The Rust side stores `timestamp` as an ISO string; we
+ * rehydrate it as a `Date`. The `request` and `response`
+ * fields aren't persisted in the `replay_history` table
+ * (only the `request_exchange_id` and `response_exchange_id`
+ * references are) — the full request/response is still in
+ * the `exchanges` table, rehydrated on tab open via the
+ * `exchangeStore.get(id)` lookup. For Phase 7, the v1
+ * minimum-viable persistence is: the `history[].exchangeId`
+ * is set, and the `ReplayHistoryPanel` can navigate to the
+ * exchange detail via the id. The full request/response
+ * re-hydration is a v0.5+ follow-up.
+ */
+function replayEntryToHistoryItem(entry: ReplayHistoryEntry): {
+  request: ExchangeRequest;
+  response: ExchangeResponse | null;
+  timestamp: Date;
+  exchangeId: ExchangeId | null;
+} {
+  return {
+    request: {
+      method: "GET",
+      url: "",
+      version: "HTTP/1.1",
+      headers: {},
+      body: { kind: "complete", data: "" },
+    },
+    response: null,
+    timestamp: new Date(entry.timestamp),
+    exchangeId: asExchangeId(
+      entry.response_exchange_id ?? entry.request_exchange_id,
+    ),
+  };
 }
 
 // Singleton store for app-wide use.
