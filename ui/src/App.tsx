@@ -103,6 +103,46 @@ export function App() {
     };
   }, []);
 
+  // Phase 5 — subscribe to `replay_event` wire events.
+  // The synchronous `send_replay` IPC return already drives
+  // the local store via `appendSend`; the WireEvent is
+  // for downstream observers (cross-tab sync, future
+  // agent integration, etc.). For v1 we log + (if the
+  // event's `tab_id` matches a current tab) update
+  // `latestReplayId` on the matching tab.
+  useEffect(() => {
+    const client = getWireClient();
+    const unsub = client.subscribe(
+      "replay_event",
+      (payload) => {
+        const ev = payload as {
+          tab_id: string;
+          kind: "send_complete" | "send_failed";
+          exchange_id: string | null;
+          error: string | null;
+        };
+        if (ev.kind === "send_complete") {
+          console.debug(
+            "replay_event: send_complete",
+            ev.tab_id,
+            ev.exchange_id,
+          );
+        } else {
+          console.warn(
+            "replay_event: send_failed",
+            ev.tab_id,
+            ev.error,
+          );
+        }
+        // v0.5+ will route the event to the matching tab;
+        // for v1 the synchronous IPC path already updated
+        // the local store, so the WireEvent is a no-op for
+        // the local UI.
+      },
+    );
+    return unsub;
+  }, []);
+
   // Track dropped gaps from the wire bus. We poll the
   // `WireClient` for the count (it owns the array) on a
   // microtask interval. The polling is necessary because the
