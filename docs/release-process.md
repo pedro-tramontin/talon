@@ -1,9 +1,10 @@
 # Release process
 
-This document describes how a Talon release is built, signed, and published. It is the human-readable companion to the two GitHub Actions workflows that do the actual work:
+This document describes how a Talon release is built, signed, and published. It is the human-readable companion to the three GitHub Actions workflows that do the actual work:
 
 - [`.github/workflows/release-please.yml`](../.github/workflows/release-please.yml) — opens and updates the release PR; creates the git tag and the GitHub Release.
-- [`.github/workflows/release.yml`](../.github/workflows/release.yml) — builds the Tauri bundles for all three target OSes and attaches them to the release.
+- [`.github/workflows/draft-build.yml`](../.github/workflows/draft-build.yml) — builds **debug-mode** Tauri bundles for every `vX.Y.Z-pre.N` pre-release tag and attaches them to the pre-release.
+- [`.github/workflows/release.yml`](../.github/workflows/release.yml) — builds **release-mode** Tauri bundles for every stable `vX.Y.Z` tag and attaches them to the published release.
 
 If you are about to cut a release for the first time, read **§1 (prerequisites)** and **§2 (cutting a release)** end-to-end before pushing the green button.
 
@@ -101,6 +102,26 @@ Before merging the release-please PR:
 
 - The release body is auto-generated from the CHANGELOG.md entry for that version.
 - Each bundle has a SHA-256 next to it (GitHub's UI computes it for the asset). The README's install instructions point at the latest release.
+
+### 2.3 Daily flow with pre-releases (the typical path)
+
+With `prerelease: true` in `release-please-config.json`, the default flow is the pre-release path described in §6. The day-to-day is:
+
+```
+1. Merge PRs to main. release-please accumulates them into a
+   pre-release PR titled "chore(main): release X.Y.Z-pre.N".
+2. Merge the pre-release PR. The tag vX.Y.Z-pre.N fires
+   draft-build.yml. Debug bundles attach to the pre-release page
+   (~20-30 min).
+3. Smoke-test the pre-release bundles (or share the URL with
+   collaborators for QA).
+4. When ready to ship, push a `chore: promote vX.Y.Z` empty
+   commit. release-please auto-promotes the pre-release to a
+   stable tag vX.Y.Z, which fires release.yml for the prod build
+   (~45-60 min).
+```
+
+§6 has the full detail on the pre-release path, the promotion mechanic, the cleanup story, and the re-run recovery. Read §6 once before you do your first promotion.
 - A draft `.deb` and `.AppImage` build for **both** `x86_64` and `aarch64` Linux is **not** included in the first-cut pipeline. The current Linux job builds on `ubuntu-22.04` (x86_64 only); aarch64 Linux is a follow-up. Track this separately.
 
 ---
@@ -110,8 +131,8 @@ Before merging the release-please PR:
 Talon is a multi-crate Cargo workspace (8 crates: `bk-core`, `bk-store`, `bk-engine`, `bk-proxy`, `bk-mcp`, `bk-agent`, `bk-events`, `app`) **plus** a Tauri config file and a Node `package.json`, all of which carry a `version` field. release-please needs to keep all 10 of these in lockstep.
 
 | File | Purpose |
-|---|---|
-| `release-please-config.json` | 8 `packages` entries, one per crate, each with its `component` name and `release-type: "rust"`. The `linked-versions` plugin (groupName `talon`, all 8 component names) keeps all crates on a single version line — when any one is bumped, the highest version is picked and applied to all 8 in the same release PR. The `extra-files` rule mirrors the unified version into `app/tauri.conf.json` and `ui/package.json` after the bump. |
+|---|---|---|
+| `release-please-config.json` | 8 `packages` entries, one per crate, each with its `component` name and `release-type: "rust"`. The `linked-versions` plugin (groupName `talon`, all 8 component names) keeps all crates on a single version line — when any one is bumped, the highest version is picked and applied to all 8 in the same release PR. The `extra-files` rule mirrors the unified version into `app/tauri.conf.json` and `ui/package.json` after the bump. **`prerelease: true` + `prerelease-type: "pre"`** enable the draft-release flow (see §6): every push to `main` produces a `vX.Y.Z-pre.N` pre-release tag instead of going straight to `vX.Y.Z`. The pre-release is auto-promoted to a stable release on the next no-bump commit. |
 | `.release-please-manifest.json` | 8 entries (one per crate) at `0.1.0`. Updated on every release PR. |
 | `crates/*/Cargo.toml` and `app/Cargo.toml` | Each has `version = "0.1.0"` as a **literal string** (not `version.workspace = true`). Inlined manually because release-please can't update workspace-inherited versions — see §3 "Why this shape" below. |
 | `Cargo.toml` `[workspace.package] version` | Still present, still a literal `0.1.0`. The `edition`, `rust-version`, `license`, `repository`, `authors` fields in this block are still inherited by all 8 crates via `*.workspace = true` (release-please doesn't try to update those, so the inheritance pattern works for them). The `version` field here is the "default" that new crates would inherit if any future crate reintroduces the pattern, but in practice every crate now inlines its own. |
@@ -119,7 +140,8 @@ Talon is a multi-crate Cargo workspace (8 crates: `bk-core`, `bk-store`, `bk-eng
 | `ui/package.json` `"version"` | Same as `app/tauri.conf.json`. Mirrored for in-UI display and to keep `pnpm version` honest. |
 | `CHANGELOG.md` | Regenerated by release-please on every release. Do NOT edit by hand — release-please will overwrite it on the next release PR. |
 | `.github/workflows/release-please.yml` | Runs release-please on every push to `main`. Uses `RELEASE_PLEASE_TOKEN` (not the default token). |
-| `.github/workflows/release.yml` | Tag-triggered. 3 parallel OS builds + 1 finalize job. Uses `tauri-apps/tauri-action@v0`. |
+| `.github/workflows/draft-build.yml` | **Draft-release workflow.** Tag-triggered on `v*-pre.*`. Builds debug-mode Tauri bundles for all 3 OSes in parallel and attaches them to the pre-release created by release-please. macOS is unsigned (no `APPLE_*` env var forwarding). See §6. |
+| `.github/workflows/release.yml` | **Stable-release workflow.** Tag-triggered on `v[0-9]+.[0-9]+.[0-9]+` (regex intentionally excludes `-pre.N` suffixes). Builds release-mode Tauri bundles for all 3 OSes in parallel and attaches them to the published release. macOS is signed if `APPLE_CERTIFICATE` is configured, unsigned otherwise. Has a `finalize` job that publishes the draft. |
 | `renovate.json5` | Weekly version-PRs for deps + GitHub Actions. Unrelated to release-please. |
 
 ### Why this shape (and the inline-`version` choice)
@@ -359,9 +381,179 @@ After the fix, a no-op commit to main should produce a clean release-please run 
 
 **Why this section exists:** the v0.1.3 → v0.2.0 gap is the first time a release was silently lost to a config-vs-state drift. Without a §4.6 entry, the next session that hits the same symptom would re-derive the diagnosis from the release-please logs and the manifest's divergent state — which is fine for a one-time recovery but wasteful when the same symptom recurs. This section records both the root cause (linked-versions drift) and the canonical recovery (the manual release PR), so future sessions can fix it in one shot.
 
+### 4.7 draft-build.yml didn't fire after a pre-release tag was created
+
+Symptom: release-please created the `vX.Y.Z-pre.N` tag and the GitHub pre-release page exists, but `gh run list --workflow="Draft build" --limit 5` shows zero rows for the tag.
+
+Causes (most → least likely):
+
+1. **Tag pattern mismatch.** `draft-build.yml` triggers on `'v*-pre.*'`. If the tag was created as `vX.Y.Z-preN` (no dot between `pre` and `N`), the pattern doesn't match. Fix: delete the bad tag (`git push origin :refs/tags/vX.Y.Z-preN && gh release delete vX.Y.Z-preN --yes`) and push the right tag shape (`vX.Y.Z-pre.N`).
+2. **The release-please `prerelease-type` config is wrong.** If `prerelease-type` is set to a different value (e.g. `alpha`), the tag shape becomes `vX.Y.Z-alpha.N` and `v*-pre.*` doesn't match. Fix: align `prerelease-type` in `release-please-config.json` with the workflow's tag pattern. The two are coupled by convention, not by config validation.
+3. **The tag was force-pushed to a different commit** with `git push --force`. GitHub Actions does NOT re-fire a workflow on force-push of an existing tag. Fix: delete and recreate the tag.
+4. **The `RELEASE_PLEASE_TOKEN` PAT is missing `workflow` scope.** Same root cause as §4.2 — the tag is created (release-please used `Contents: write`), but the tag-push event is treated as coming from an untrusted actor with no workflow trigger rights. The release-please job appears to succeed (it created the tag and the GitHub Release), but `draft-build.yml` is never invoked.
+
+Diagnostic for #4:
+
+```bash
+# Confirm the tag exists
+git ls-remote --tags origin | grep vX.Y.Z-pre
+
+# Check if the tag-push event fired any workflow
+gh run list --workflow="Draft build" --limit 10
+# (empty list = the tag-push event was never received by Actions,
+# or the workflow file was rejected by the parser)
+```
+
+If `draft-build.yml` is in the rejected-parser state (the `gh run list` returns zero rows even after a fresh push), the workflow file has a YAML or `if:` issue. Tag-triggered workflows reject any `if:` expression — same root cause as the release.yml's macOS-job history in §4.3a. Fix: move the conditional out of YAML and into the `run:` block (or just delete the `if:`).
+
+### 4.7a Pre-release exists but has no assets (no .deb/.dmg/.msi)
+
+Symptom: the `vX.Y.Z-pre.N` pre-release page exists on GitHub (with the "Pre-release" badge), but the assets list is empty or only has assets from one OS.
+
+Causes:
+
+1. **The build jobs are still running.** First time you cut a pre-release, all 3 OS builds run in parallel. A 5-10 min wait is normal. Check `gh run list --workflow="Draft build"` for in-progress jobs.
+2. **One OS build failed and the others didn't upload.** Same as §4.3 for the prod path. Each OS job is independent; a failure in one doesn't stop the others. Re-run the failed job via `gh run rerun <RUN_ID> --failed` — see §6.5 for the exact command.
+3. **Tauri-action failed to attach to the pre-release** (e.g. the GitHub Release was deleted or moved by an out-of-band operation). Check the build job logs for `Error: Not Found` or `404` on the release API call. Fix: re-run the build job; tauri-action will re-attach.
+
 ---
 
-## 5. Future work (not yet implemented)
+## 6. Draft releases (pre-release builds)
+
+Every `feat:` or `fix:` commit merged to `main` accumulates into a **pre-release** tag (`vX.Y.Z-pre.N`). The pre-release tag is built in debug mode by `draft-build.yml`, and the bundles are attached to a GitHub Release marked as "Pre-release" (visible with a badge, but not surfaced in the "Latest" feed). When you're ready to ship, you promote the pre-release to a stable release and the production build pipeline takes over (see §6.3 for the promotion step). The day-to-day version of this flow is summarized in §2.3.
+
+### 6.1 How a pre-release gets created
+
+```
+1. Dev merges PRs to main (each commit follows Conventional Commits)
+2. release-please opens or updates a release PR titled
+   "chore(main): release X.Y.Z-pre.N"
+   The N counter increments on each merge. If only `chore:` /
+   `docs:` commits land, no pre-release is opened (the existing
+   pre-release, if any, stays put).
+   Files it touches (same as the stable release path):
+     - Cargo.toml ([workspace.package] version)
+     - app/tauri.conf.json ("version")   ← synced via extra-files
+     - ui/package.json ("version")       ← synced via extra-files
+     - CHANGELOG.md (pre-release section appended)
+3. Reviewer (you) sanity-checks:
+     - Is the bump correct? (feat → minor, fix → patch, etc.)
+     - Is the changelog list complete?
+     - Are the three version files in lockstep?
+4. Reviewer merges the release PR
+5. release-please creates:
+     - git tag v<X>.<Y>.<Z>-pre.<N>
+     - GitHub Release titled "Talon v<X>.<Y>.<Z>-pre.<N>"
+       marked as a pre-release (NOT as a draft — assets are
+       downloadable to anyone with the URL)
+6. The tag push fires draft-build.yml
+7. draft-build.yml builds 3 OS debug bundles in parallel:
+     - Linux:   .deb + .AppImage  (debug profile, no LTO, no strip)
+     - macOS:   .dmg (.app under the hood) — universal binary, UNSIGNED
+     - Windows: .msi + .exe       (debug profile)
+8. tauri-action uploads each bundle to the pre-release as it finishes
+9. The pre-release is live at
+   https://github.com/pedro-tramontin/talon/releases/tag/v<X>.<Y>.<Z>-pre.<N>
+```
+
+A pre-release build typically takes **20-30 min** end-to-end (3-OS parallel debug build, dominated by the macOS universal-binary build). Per-merge CI cost is +$3-8 in Actions minutes (the debug profile compiles faster than release, but the multi-OS matrix still adds up).
+
+### 6.2 Why debug mode for pre-releases
+
+| Reason | Detail |
+|---|---|
+| **No Apple notarisation quota burn** | Every macOS notarisation is a paid API call. Signing a debug bundle on every merge would exhaust quarterly quota before the next prod release. The macOS build in `draft-build.yml` is **unsigned by design** — `APPLE_*` secrets are NOT forwarded to that job. |
+| **Matches `cargo run`** | `tauri build --debug` produces a binary that behaves identically to `cargo run -p app`. QA can validate that the bundle on the pre-release page actually matches the source on main, not a hypothetical "optimized" version. |
+| **Faster than release** | The debug cargo profile skips LTO, codegen-units, and strip, so each OS build is ~30-50% faster than its release-mode equivalent. |
+| **Larger binaries** | Trade-off: debug binaries are 5-10× larger (Talon debug `.dmg` is ~600 MB vs ~80 MB release) and start slower. Acceptable for internal smoke tests. |
+
+The Linux + Windows builds **are** signed/built with the same toolchain as the prod release path; only the cargo profile is different. macOS is unsigned — see the file header of `draft-build.yml` for the explicit "no APPLE_* forwarding" design.
+
+### 6.3 Promoting a pre-release to stable
+
+When the pre-release is ready to ship as a real release, you promote it. The promotion is a single no-bump commit to `main`:
+
+```bash
+# From main, on any branch, after the latest pre-release is merged
+git commit --allow-empty -m "chore: promote v<X>.<Y>.<Z>"
+git push origin main
+```
+
+What happens next:
+
+```
+1. release-please sees the empty `chore:` commit. No new conventional
+   commits since v<X>.<Y>.<Z>-pre.<N> → no version bump is needed,
+   but there IS an open pre-release at that version.
+2. release-please auto-promotes: closes the v<X>.<Y>.<Z>-pre.<N>
+   pre-release by creating a v<X>.<Y>.<Z> tag on the same commit.
+3. The stable v<X>.<Y>.<Z> tag fires release.yml (NOT draft-build.yml
+   — release.yml's tag filter is `v[0-9]+.[0-9]+.[0-9]+`, which
+   does not match the pre.N suffix).
+4. release.yml builds 3 OS RELEASE bundles in parallel (~45-60 min).
+5. The stable GitHub Release is published. The pre-release
+   (`v<X>.<Y>.<Z>-pre.<N>`) is left in place as a historical
+   record (you can delete it manually if you want a clean release
+   list — see §6.4).
+```
+
+**Why the chore: commit trick works:** release-please treats a `chore:` commit as "no bump needed." When the version it's about to publish is the same as the open pre-release, it promotes instead of creating a new pre-release tag. The mechanism is built into release-please; you do NOT touch version files or the manifest by hand.
+
+### 6.4 Cleaning up after a promotion
+
+After a successful stable release, you'll have:
+
+- A `v<X>.<Y>.<Z>` stable release (published, "Latest" badge)
+- A `v<X>.<Y>.<Z>-pre.<N>` pre-release (still in the releases list, with debug bundles attached)
+- N-1 older pre-release tags (`v<X>.<Y>.<Z>-pre.1` through `-pre.N-1`)
+
+To clean up:
+
+```bash
+# Delete the pre-release records from GitHub (keeps the git tags)
+gh release delete v<X>.<Y>.<Z>-pre.<N> --yes
+gh release delete v<X>.<Y>.<Z>-pre.1 --yes
+# ... etc for each pre.N tag
+
+# Delete the git tags
+git push origin --delete v<X>.<Y>.<Z>-pre.<N>
+git push origin --delete v<X>.<Y>.<Z>-pre.1
+# ... etc
+```
+
+The git tag deletion is **not** picked up by release-please as a "fix the manifest" signal — release-please only reads tags when it needs to determine the baseline, and the baseline for the next release is `v<X>.<Y>.<Z>` (the stable tag you just shipped), not any of the pre.N tags. So cleanup is purely cosmetic.
+
+### 6.5 Re-running a failed pre-release build
+
+`draft-build.yml` has a `workflow_dispatch` trigger for manual re-runs (the prod `release.yml` has the same). If a build fails (e.g. macOS runner flake, transient network error), don't push another commit to re-trigger the tag — push the tag again or re-run via the Actions UI:
+
+```bash
+# Find the failed run for the tag
+gh run list --workflow="Draft build" --json databaseId,conclusion,headBranch \
+  --jq '.[] | select(.headBranch == "v0.3.0-pre.3") | "\(.databaseId) \(.conclusion)"'
+
+# Re-run the failed job (re-runs all jobs; failed-only is the same as
+# release.yml's pattern)
+gh run rerun <RUN_ID> --failed
+```
+
+The `concurrency: cancel-in-progress: true` setting means that if release-please re-pushes the same `vX.Y.Z-pre.N` tag (e.g. during a recovery from a config error), the in-flight build is cancelled. This is intentional — a new push of the same tag means the tag now points at a different commit, and the old build's artifacts are no longer valid.
+
+### 6.6 When to use the pre-release path vs. straight-to-stable
+
+The pre-release path is the default. Every merge to main accumulates into the active pre-release; you don't need to opt in. The decision you make is **when to promote** (cut a `chore:` commit + push).
+
+If you want to bypass the pre-release path entirely and cut a stable release straight from main (e.g. an emergency hotfix on a Saturday), you can still do that by:
+
+1. Closing the open pre-release PR (do NOT merge it)
+2. Manually tagging `HEAD` of main as `v<X>.<Y>.<Z>`
+3. Pushing the tag — this fires `release.yml` directly
+
+But this is the exceptional case. For 99% of releases, the pre-release path produces the right behavior automatically.
+
+---
+
+## 7. Future work (not yet implemented)
 
 - **Windows code signing.** Add a `WINDOWS_CERTIFICATE` secret (base64 .pfx) and the matching `tauri-action` env vars. Track separately.
 - **Linux aarch64 builds.** Add `aarch64-unknown-linux-gnu` to a second Linux job that runs on a cross-build runner. Track separately.
