@@ -169,4 +169,138 @@ describe("MatchReplaceEditor", () => {
     ) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
   });
+
+  // Phase 7 C-B.2: the "Test" button
+  it("disables the Test button when the URL input is empty", async () => {
+    listMock.mockResolvedValueOnce([]);
+    render(<MatchReplaceEditor />);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("match-replace-editor-test-button"),
+      ).toBeDefined();
+    });
+    const btn = screen.getByTestId(
+      "match-replace-editor-test-button",
+    ) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("clicking Test with a sample URL shows the engine's result", async () => {
+    const rules: MatchReplaceRule[] = [
+      {
+        target: "request_url",
+        case_insensitive: false,
+        is_regex: false,
+        pattern: "/api/v1",
+        replace: "/api/v2",
+        enabled: true,
+        priority: 0,
+      },
+    ];
+    listMock.mockResolvedValueOnce(rules);
+    render(<MatchReplaceEditor />);
+    await waitFor(() => {
+      expect(screen.getByTestId("match-replace-row-0")).toBeDefined();
+    });
+    // Type the sample URL.
+    const urlInput = screen.getByTestId(
+      "match-replace-editor-test-url",
+    ) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(urlInput, {
+        target: { value: "https://x.test/api/v1/users" },
+      });
+    });
+    // Click Test.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("match-replace-editor-test-button"));
+    });
+    // The result is shown.
+    const result = screen.getByTestId("match-replace-editor-test-result");
+    expect(result.textContent).toBe("https://x.test/api/v2/users");
+  });
+
+  it("the Test result updates when rules change after a Test click", async () => {
+    const rulesBefore: MatchReplaceRule[] = [
+      {
+        target: "request_url",
+        case_insensitive: false,
+        is_regex: false,
+        pattern: "/old",
+        replace: "/new",
+        enabled: true,
+        priority: 0,
+      },
+    ];
+    listMock.mockResolvedValueOnce(rulesBefore);
+    render(<MatchReplaceEditor />);
+    await waitFor(() => {
+      expect(screen.getByTestId("match-replace-row-0")).toBeDefined();
+    });
+    const urlInput = screen.getByTestId(
+      "match-replace-editor-test-url",
+    ) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(urlInput, {
+        target: { value: "https://x.test/old/api" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("match-replace-editor-test-button"));
+    });
+    // Initial result.
+    expect(
+      screen.getByTestId("match-replace-editor-test-result").textContent,
+    ).toBe("https://x.test/new/api");
+    // Now change the rules (via `uiStore.setMatchReplaceRules`).
+    // The useEffect on `[rules, testUrl]` re-runs the engine.
+    const rulesAfter: MatchReplaceRule[] = [
+      {
+        target: "request_url",
+        case_insensitive: false,
+        is_regex: false,
+        pattern: "/old",
+        replace: "/renamed",
+        enabled: true,
+        priority: 0,
+      },
+    ];
+    await act(async () => {
+      uiStore.getState().setMatchReplaceRules(rulesAfter);
+    });
+    // The result updates without the user clicking Test again.
+    expect(
+      screen.getByTestId("match-replace-editor-test-result").textContent,
+    ).toBe("https://x.test/renamed/api");
+  });
+
+  it("Test without a sample URL shows a placeholder, not a result", async () => {
+    listMock.mockResolvedValueOnce([]);
+    render(<MatchReplaceEditor />);
+    await waitFor(() => {
+      expect(screen.getByTestId("match-replace-editor-test-url")).toBeDefined();
+    });
+    // Type a URL but clear it again.
+    const urlInput = screen.getByTestId(
+      "match-replace-editor-test-url",
+    ) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(urlInput, { target: { value: "x" } });
+    });
+    expect(
+      (screen.getByTestId("match-replace-editor-test-button") as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    // Clear the URL.
+    await act(async () => {
+      fireEvent.change(urlInput, { target: { value: "" } });
+    });
+    // The button is disabled again.
+    expect(
+      (screen.getByTestId("match-replace-editor-test-button") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    // No result element rendered.
+    expect(screen.queryByTestId("match-replace-editor-test-result")).toBeNull();
+  });
 });
