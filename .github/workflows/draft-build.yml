@@ -1,0 +1,224 @@
+name: Draft build
+
+# Tag-triggered. Builds the pre-release (draft) bundles in DEBUG mode
+# for every push of a `vX.Y.Z-pre.N` tag created by release-please.
+#
+# This is the "draft release" half of the release flow described in
+# `docs/release-process.md` §6. The stable release half is in
+# `release.yml` (which fires on `vX.Y.Z` tags without a `-pre.N`
+# suffix — the regex in release.yml is `v[0-9]+.[0-9]+.[0-9]+`, so it
+# intentionally does NOT match pre-release tags).
+#
+# Why a separate workflow:
+#   * release.yml is optimized for prod: signed macOS bundle, release
+#     cargo profile (LTO + strip), published release. That takes
+#     ~45-60 min total per release.
+#   * Draft builds happen on EVERY merge to main. The cost has to
+#     stay low — we want fast, unsigned, debug-mode bundles that
+#     can be smoke-tested internally but don't waste Apple
+#     notarisation quota.
+#
+# Why `--debug` (not just unsigned):
+#   * `tauri build --debug` produces a real debug-mode binary (no
+#     LTO, no strip, debug symbols). It matches what `cargo run`
+#     produces locally, so QA can validate a build that exactly
+#     reflects the source on main.
+#   * Debug builds are 5-10x larger and start slower than release
+#     builds, but compile faster (no optimization). Per-OS build
+#     time: ~5-10 min for Linux/Windows, ~10-15 min for macOS
+#     universal. Per merge: ~20-30 min wall clock (3 OSes parallel).
+#
+# Why no macOS code signing:
+#   * Draft bundles are for internal smoke testing. Apple Developer
+#     ID certs are per-quarter-quota; burning them on every merge
+#     would exhaust quota before the next prod release.
+#   * If `APPLE_CERTIFICATE` is set in repo secrets, this workflow
+#     still skips it — the `env:` block on the macOS job does NOT
+#     forward APPLE_* secrets. `tauri build` reads
+#     `std::env::var_os("APPLE_CERTIFICATE")`, gets `None`, and
+#     skips the codesign branch. Result: unsigned .app + .dmg.
+#
+# Tag format: `vX.Y.Z-pre.N` (e.g. v0.3.0-pre.1, v0.3.0-pre.2).
+# release-please emits these when `prerelease: true` is set in
+# release-please-config.json. The `include-v-in-tag: true` keeps
+# the `v` prefix.
+#
+# Trigger ALSO includes `workflow_dispatch` so the same job can be
+# re-run manually (e.g. when a build fails and you don't want to
+# push another commit just to retrigger).
+
+on:
+  push:
+    tags:
+      - 'v*-pre.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.3.0-pre.1). Leave empty to use the pushed tag if this is a tag-triggered run.'
+        required: false
+        default: ''
+
+# Same as release.yml: contents: read at workflow level, the build
+# jobs override to contents: write so tauri-action can attach assets.
+permissions:
+  contents: read
+
+# Cancel any in-flight draft build for the same tag if a new commit
+# is pushed. (release-please could conceivably re-push a tag during
+# recovery from a failed run; this prevents stale artifacts.)
+concurrency:
+  group: draft-${{ github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Three parallel jobs, one per OS. Each mirrors the equivalent job
+  # in release.yml, with two differences:
+  #   1. The macOS job does NOT forward APPLE_* secrets → unsigned.
+  #   2. All three jobs pass `--debug` to `tauri build` (the only
+  #      way to get debug-mode bundles in Tauri 2; toggling
+  #      `CARGO_PROFILE_RELEASE_DEBUG=true` is not enough — it
+  #      re-uses the release profile and only re-enables debug
+  #      info, which is a different shape than the user gets from
+  #      `cargo run`).
+
+  build-linux:
+    name: Build (Linux, debug)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write  # required by tauri-action to upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system deps (webkit2gtk 4.1, GTK 3, etc.)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI deps + build
+        run: pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build
+
+      - name: Build Tauri bundle (Linux, debug)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # The tag that triggered the workflow. tauri-action strips
+          # the `v` prefix when stamping bundle metadata.
+          tagName: ${{ github.ref_name }}
+          releaseName: "Talon ${{ github.ref_name }}"
+          releaseBody: "**Pre-release (debug build).** See [CHANGELOG.md](https://github.com/pedro-tramontin/talon/blob/${{ github.ref_name }}/CHANGELOG.md) for the full release notes."
+          # release-please already created this release as a
+          # pre-release + non-draft. The two flags below are
+          # safety nets: if for any reason the release doesn't
+          # exist when tauri-action runs, the new release is
+          # created as a pre-release draft (NOT auto-published).
+          releaseDraft: true
+          prerelease: true
+          # `--debug` puts `tauri build` in debug mode: no LTO, no
+          # strip, debug symbols. The bundle is much larger and
+          # starts slower than a release build, but matches what
+          # `cargo run` produces locally. `--bundles` is forwarded
+          # to `cargo tauri build`.
+          args: --debug --bundles deb,appimage
+
+  build-macos:
+    name: Build (macOS, debug)
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # `--target universal-apple-darwin` requires BOTH the
+      # `aarch64-apple-darwin` AND `x86_64-apple-darwin` Rust
+      # targets. The macOS runner image only includes the native
+      # arch by default, so we explicitly add the cross target.
+      # (Same caveat as release.yml's macOS job.)
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI deps + build
+        run: pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build
+
+      # NO APPLE_* secrets in this job. The intent is explicit:
+      # draft builds are always unsigned. See the workflow header
+      # comment for the rationale (no notarisation quota burn on
+      # internal smoke tests).
+      - name: Build Tauri bundle (macOS, debug, unsigned)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: tauri-apps/tauri-action@v0
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Talon ${{ github.ref_name }}"
+          releaseBody: "**Pre-release (debug build, unsigned macOS).** See [CHANGELOG.md](https://github.com/pedro-tramontin/talon/blob/${{ github.ref_name }}/CHANGELOG.md) for the full release notes."
+          releaseDraft: true
+          prerelease: true
+          args: --debug --bundles app,dmg --target universal-apple-darwin
+
+  build-windows:
+    name: Build (Windows, debug)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI deps + build
+        run: pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build
+
+      - name: Build Tauri bundle (Windows, debug)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Talon ${{ github.ref_name }}"
+          releaseBody: "**Pre-release (debug build).** See [CHANGELOG.md](https://github.com/pedro-tramontin/talon/blob/${{ github.ref_name }}/CHANGELOG.md) for the full release notes."
+          releaseDraft: true
+          prerelease: true
+          args: --debug --bundles msi,nsis
