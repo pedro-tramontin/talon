@@ -18,6 +18,105 @@ This document is the canonical design overview. For the rationale behind specifi
 | `app` | Tauri 2 shell. 21 Tauri commands, the `WireClient` (Tauri event bus consumer), and the React-frontend mount point. |
 | `ui` | React 18 + TypeScript + Vite + Tailwind + Zustand. The only user-facing surface. |
 
+## Layered architecture
+
+Talon follows a strict layered model. The UI knows about Tauri commands; the Tauri shell knows about the engine; the engine knows about the domain types and the persistence layer. Nothing skips a layer, and no layer reaches sideways (with one exception: the `bk-events` events bus crosses every layer as a horizontal conduit).
+
+```mermaid
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'linear'}}}%%
+flowchart TB
+    subgraph L1["Layer 1 — UI (React)"]
+        direction LR
+        L1a["ExchangeList"] ~~~ L1b["ReplayView"] ~~~ L1c["SettingsModal"]
+        L1d["AgentPanel"] ~~~ L1e["RightRail"] ~~~ L1f["NotesPanel"]
+    end
+
+    subgraph L2["Layer 2 — UI state (Zustand stores)"]
+        direction LR
+        L2a["projectStore"] ~~~ L2b["exchangeStore"] ~~~ L2c["replayStore"]
+        L2d["scopeStore"] ~~~ L2e["agentStore"] ~~~ L2f["wsStore"]
+    end
+
+    subgraph L3["Layer 3 — IPC bridge"]
+        direction TB
+        L3a["ui/src/api.ts<br/>invoke('open_project', ...)"]
+        L3b["app::lib.rs<br/>invoke_handler! (Tauri shell)"]
+    end
+
+    subgraph L4["Layer 4 — Tauri command surface (21 commands)"]
+        direction LR
+        L4a["open_project<br/>list_exchanges<br/>get_exchange<br/>start_proxy"]
+        L4b["send_replay<br/>open_replay_tab<br/>search_exchanges"]
+        L4c["list_scope_rules<br/>add_match_replace_rule<br/>update_notes"]
+        L4d["agent_start<br/>agent_confirm_write<br/>agent_cancel"]
+    end
+
+    subgraph L5["Layer 5 — Application core (bk-engine)"]
+        direction TB
+        L5a["struct Engine {<br/>  config_dir: PathBuf<br/>  projects: Projects<br/>  event_tx: EventSender<br/>  mcp_event_tx: McpEventSender<br/>}"]
+        L5b["impl Engine {<br/>  fn open_project, close_project<br/>  fn get_exchange, list_recent<br/>  fn subscribe_events, subscribe_mcp_events<br/>}"]
+    end
+
+    subgraph L6["Layer 6 — Domain engines"]
+        direction LR
+        L6a["bk-proxy<br/>mitm.rs<br/>upstream_pool.rs<br/>listener.rs"]
+        L6b["Scope::evaluate<br/>MatchReplace::apply<br/>(bk-proxy::scope, match_replace)"]
+        L6c["bk-agent<br/>AgentLoop<br/>PromptBuilder<br/>ToolRegistry"]
+    end
+
+    subgraph L7["Layer 7 — Domain types (bk-core)"]
+        direction LR
+        L7a["HttpExchange<br/>Request, Response<br/>Body (Complete, Streaming)"]
+        L7b["Project, ProjectSettings<br/>ScopeRule, MatchReplaceRule<br/>Tag, Note, ExchangeMeta"]
+    end
+
+    subgraph L8["Layer 8 — Persistence (bk-store)"]
+        direction LR
+        L8a["Projects (pool)<br/>Exchanges CRUD<br/>FTS5 index<br/>Tags CRUD"]
+        L8b[("SQLite<br/>per-project<br/>.sqlite files")]
+    end
+
+    %% Side-cars
+    subgraph SIDE_MCP["Side-car — bk-mcp (parallel IPC)"]
+        direction TB
+        SIDE_MCP_a["stdio JSON-RPC server<br/>20 tools over rmcp<br/>McpError -> JSON-RPC codes"]
+    end
+
+    subgraph SIDE_BUS["Cross-cutting — bk-events (the events bus)"]
+        direction LR
+        SIDE_BUS_a["WireEvent {<br/>  seq: u64<br/>  kind: WireEventKind<br/>}"]
+        SIDE_BUS_b["WireEventKind:<br/>ExchangeInserted | RequestCaptured<br/>ResponseCaptured | Replay | AgentMessage | ..."]
+    end
+
+    %% Vertical flow (data + control)
+    L1  -->|"user input"| L2
+    L2  -->|"invoke()"| L3
+    L3  -->|"tauri transport"| L4
+    L4  -->|"State&lt;EngineArc&gt;"| L5
+    L5  -->|"engine methods"| L6
+    L6  -->|"uses"| L7
+    L7  -->|"SQL on"| L8
+
+    %% Side-car connections
+    SIDE_MCP -.->|"stdin/stdout<br/>(parallel IPC)"| L5
+    SIDE_BUS -.->|"emits + subscribes<br/>(every layer)"| L5
+
+    %% Bus crosses every layer
+    L1 -.-> SIDE_BUS
+    L4 -.-> SIDE_BUS
+    L6 -.-> SIDE_BUS
+
+    classDef sidecar fill:#1a1a2e,stroke:#8a2be2,color:#e0e0e0
+    class SIDE_MCP,SIDE_BUS sidecar
+```
+
+**Reading the diagram:**
+
+- **Top-down arrows** are the normal data + control flow. A user clicks `ExchangeList` (L1), the click hits `exchangeStore` (L2), which calls `invoke('list_exchanges', ...)` (L3) over the Tauri transport (L3 → L4), which lands in the `list_exchanges` Tauri command (L4), which calls `Engine::list_recent` (L5), which reads from `bk-store` (L5 → L7 → L8).
+- **`bk-events` is the events bus.** It crosses every layer as a horizontal conduit. The proxy emits `RequestCaptured` from L6, the engine re-emits it on the Tauri bus from L5, the UI's `WireClient` subscribes in L3, and `exchangeStore` updates in L2. The seq counter is the contract: gaps in the seq are observable as a "missed events" banner in the UI.
+- **`bk-mcp` is a parallel IPC bridge.** External LLMs (Claude Desktop, etc.) connect over stdio, and the MCP server translates their tool calls into the same `Engine` API that the Tauri commands use. The MCP server is NOT a layer — it's a second front door.
+- **`bk-core` is the contract.** Every crate imports types from `bk-core`. The `#[non_exhaustive]` markers on `WireEvent`, `Body`, and the project types are the seam where Phase 10's plugin system will plug in.
+
 ## Process topology
 
 One process, one Tokio runtime, one Tauri window:

@@ -91,7 +91,7 @@ make ci
 
 ## Documentation
 
-- **[`DEVELOPER.md`](DEVELOPER.md)** — building, running, testing, debugging, the inner dev loop
+- **[`docs/developer.md`](docs/developer.md)** — building, running, testing, debugging, the inner dev loop
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — how to contribute (issues, PRs, AI policy, code review checklist)
 - **[`docs/architecture.md`](docs/architecture.md)** — crate layout, process topology, data flow, invariants
 - **[`docs/requirements.md`](docs/requirements.md)** — host toolchain per OS

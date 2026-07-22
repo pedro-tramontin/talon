@@ -10,7 +10,7 @@ Thanks for your interest in contributing. Talon is a single-maintainer solo proj
 
 ## Development setup
 
-See [`DEVELOPER.md`](DEVELOPER.md) for the full setup: toolchain, building, running tests, and the inner dev loop. The TL;DR is `make ci` runs the same pipeline CI runs.
+See [`docs/developer.md`](docs/developer.md) for the full setup: toolchain, building, running tests, and the inner dev loop. The TL;DR is `make ci` runs the same pipeline CI runs.
 
 ## Coding style
 
