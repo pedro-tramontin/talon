@@ -18,6 +18,7 @@
 
 pub mod core;
 pub mod replay;
+pub mod scope;
 pub mod search;
 
 pub use core::EngineArc;

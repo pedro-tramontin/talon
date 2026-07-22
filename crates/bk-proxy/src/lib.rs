@@ -17,7 +17,10 @@ pub mod cli;
 pub mod config;
 pub mod events;
 pub mod listener;
+pub mod match_replace;
 pub mod mitm;
+pub mod pipeline;
+pub mod scope;
 pub mod upstream;
 pub mod upstream_pool;
 

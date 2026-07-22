@@ -191,3 +191,71 @@ export interface ProxyStatus {
 }
 
 export type ProxyState = "stopped" | "running" | "error";
+
+// ---------------------------------------------------------------------------
+// Phase 6 (§6.6 + §6.7) — scope rules and match & replace rules.
+// Mirror of `bk_core::ScopeRule` / `bk_core::MatchReplaceRule` /
+// `bk_core::MatchAction` / `bk_core::ScopeRuleKind` /
+// `bk_core::MatchReplaceTarget`. The Rust types are
+// `#[non_exhaustive]` (per the Phase 10 plugin-system design
+// contract), so we hand-roll the TS sides to match the v1
+// variants exactly. v2 additions will land as new string
+// variants here in lockstep with the Rust changes.
+// ---------------------------------------------------------------------------
+
+/**
+ * Action to apply when a `ScopeRule` matches a URL.
+ * Wire form is the `serde(rename_all = "snake_case")` string
+ * from `bk_core::MatchAction`.
+ */
+export type MatchAction = "in_scope" | "out_of_scope" | "block";
+
+/**
+ * What part of a URL a `ScopeRule` matches against.
+ * Wire form is the `serde(rename_all = "snake_case")` string
+ * from `bk_core::ScopeRuleKind`.
+ */
+export type ScopeRuleKind = "host" | "path_prefix" | "path_regex";
+
+/**
+ * Scope rule, mirror of `bk_core::ScopeRule`. The `pattern` is
+ * interpreted per `kind` (host equality / `*.` wildcard /
+ * path-prefix / path-regex). The `label` is what the UI shows
+ * in the rule list. The `priority` is the tiebreak: higher
+ * wins; equal priority uses first-declared.
+ */
+export interface ScopeRule {
+  readonly kind: ScopeRuleKind;
+  readonly pattern: string;
+  readonly action: MatchAction;
+  readonly label: string;
+  readonly priority: number;
+}
+
+/**
+ * What part of a request/response a `MatchReplaceRule`
+ * rewrites. Wire form is the `serde(rename_all = "snake_case")`
+ * string from `bk_core::MatchReplaceTarget`.
+ */
+export type MatchReplaceTarget =
+  | "request_url"
+  | "request_header"
+  | "request_body"
+  | "response_header"
+  | "response_body";
+
+/**
+ * Match & replace rule, mirror of `bk_core::MatchReplaceRule`.
+ * Disabled rules (`enabled: false`) are kept in the list but
+ * skipped at apply time. Higher `priority` runs first; equal
+ * priority uses input order.
+ */
+export interface MatchReplaceRule {
+  readonly target: MatchReplaceTarget;
+  readonly case_insensitive: boolean;
+  readonly is_regex: boolean;
+  readonly pattern: string;
+  readonly replace: string;
+  readonly enabled: boolean;
+  readonly priority: number;
+}

@@ -9,7 +9,7 @@
 use crate::events::{channel as events_channel, EventReceiver, EventSender};
 use crate::mcp_events::{channel as mcp_channel, McpEvent, McpEventReceiver, McpEventSender};
 use crate::projects::Projects;
-use bk_core::{ExchangeId, HttpExchange, ProjectId, Tag, TagId};
+use bk_core::{ExchangeId, HttpExchange, Project, ProjectId, Tag, TagId};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -366,8 +366,29 @@ impl Engine {
         self.projects.open_count()
     }
 
-    /// List the IDs of all currently open projects.
+    /// List the IDs of all currently open projects. The UI uses this
+    /// to populate the project switcher dropdown.
     pub fn open_ids(&self) -> Vec<ProjectId> {
         self.projects.open_ids()
+    }
+
+    /// Get the full `Project` (info + settings) for an open project.
+    /// Returns `ProjectNotOpen` if the project is not open. Used by
+    /// the Phase 6 Tauri commands (`list_scope_rules`,
+    /// `list_match_replace_rules`, etc.) to read the current rules
+    /// without a SQLite round-trip.
+    pub fn get_project(&self, id: ProjectId) -> crate::Result<Project> {
+        self.projects
+            .get_settings(id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(id.to_string()))
+    }
+
+    /// Update the cached `Project` (info + settings) for an open
+    /// project. Used by the Phase 6 scope-rule and match & replace
+    /// Tauri commands to write new rules. **No SQLite write happens
+    /// here** — settings are in-memory only; persistence is a v0.5+
+    /// follow-up. See `bk_engine::projects` module docs.
+    pub fn update_project(&self, project: Project) -> crate::Result<()> {
+        self.projects.update_settings(project)
     }
 }
