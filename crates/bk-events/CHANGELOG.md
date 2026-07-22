@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/pedro-tramontin/talon/compare/v0.1.2...v0.2.0) (2026-07-22)
+
+
+### Features
+
+* **bk-events:** add `WireEvent::Replay` variant + `fan_in` support for replay events ([#63](https://github.com/pedro-tramontin/talon/issues/63)) ([00262df](https://github.com/pedro-tramontin/talon/commit/00262df00687878391ffda143c4bd053bc1868c6))
+
 ## [0.1.2](https://github.com/pedro-tramontin/talon/compare/v0.1.1...v0.1.2) (2026-07-21)
 
 
