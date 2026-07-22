@@ -56,28 +56,41 @@ impl Projects {
     /// pointing at the same DB file. `bk_store::open` is cheap (it just
     /// returns a pool handle to the cached connection), so holding the
     /// write lock across it is fine.
+    ///
+    /// **Phase 6 Part C (§C-A.1):** the in-memory `ProjectSettings`
+    /// cache is rehydrated from SQLite on every `open` call. The
+    /// `ProjectSettings` are persisted to `projects.settings_json` by
+    /// `bk_store::projects::update_settings`; the on-disk value is the
+    /// source of truth. If the SQLite column is the schema's `'{}'`
+    /// default (a pre-migration-001 DB), the cache is populated with
+    /// `ProjectSettings::default()`. The fresh `Project` the caller
+    /// passes in still owns `info` (name, target_host, etc.); the cache
+    /// takes its `settings` from SQLite.
     pub fn open(&self, project: &Project) -> Result<Arc<bk_store::DbPool>> {
         let path = project_path(&self.dir, project.info.id, &project.info.db_filename)?;
         let mut pools_guard = self.pools.write().unwrap();
         if let Some(existing) = pools_guard.get(&project.info.id) {
-            // Update the in-memory cache too — if the caller re-opens
-            // with a fresh `Project` (e.g. a settings-only change
-            // before open), we want the latest settings. Phase 6
-            // doesn't expose a "re-open" path; the cache is just kept
-            // in sync defensively.
+            // Already open: rehydrate settings from SQLite (in case
+            // another writer mutated them since the last open), then
+            // merge the fresh `info` from the caller's `Project`.
             let pool = existing.clone();
             drop(pools_guard);
-            self.cache
-                .write()
-                .unwrap()
-                .insert(project.info.id, project.clone());
+            let settings =
+                bk_store::projects::read_settings(&pool, project.info.id).unwrap_or_default();
+            let mut merged = project.clone();
+            merged.settings = settings;
+            self.cache.write().unwrap().insert(merged.info.id, merged);
             return Ok(pool);
         }
         let pool = Arc::new(bk_store::open(&path)?);
         let id = project.info.id;
         pools_guard.insert(id, pool.clone());
         drop(pools_guard);
-        self.cache.write().unwrap().insert(id, project.clone());
+        // Rehydrate settings from SQLite on the fresh open.
+        let settings = bk_store::projects::read_settings(&pool, id).unwrap_or_default();
+        let mut merged = project.clone();
+        merged.settings = settings;
+        self.cache.write().unwrap().insert(id, merged);
         Ok(pool)
     }
 

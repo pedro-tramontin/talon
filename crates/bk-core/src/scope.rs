@@ -45,7 +45,7 @@ pub enum ScopeRuleKind {
     PathRegex,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopeRule {
     pub kind: ScopeRuleKind,
     pub pattern: String,
@@ -95,7 +95,7 @@ impl ScopeRule {
 
 /// A single match & replace rule. Operates on the raw request/response
 /// before/after it hits the wire.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchReplaceRule {
     /// What part of the message to match against.
     pub target: MatchReplaceTarget,

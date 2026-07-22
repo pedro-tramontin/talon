@@ -158,6 +158,9 @@ pub fn run() {
             commands::scope::list_match_replace_rules,
             commands::scope::add_match_replace_rule,
             commands::scope::remove_match_replace_rule,
+            // Phase 6 Part C (§C-A.4) — replay history persistence.
+            commands::replay::list_replay_history,
+            commands::replay::append_replay_history,
             agent::agent_start,
             agent::agent_confirm_write,
             agent::agent_cancel,

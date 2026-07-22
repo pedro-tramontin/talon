@@ -17,6 +17,6 @@ pub use model::{
     Body, ExchangeMeta, HeaderMap, HttpExchange, Method, Request, Response, ScopeState, Url,
     Version,
 };
-pub use project::{Project, ProjectInfo, ProjectSettings};
-pub use scope::{MatchAction, ScopeRule, ScopeRuleKind};
+pub use project::{Project, ProjectInfo, ProjectSettings, Theme};
+pub use scope::{MatchAction, MatchReplaceRule, MatchReplaceTarget, ScopeRule, ScopeRuleKind};
 pub use tag::Tag;

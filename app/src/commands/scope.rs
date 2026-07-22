@@ -5,16 +5,15 @@
 //! - `add_scope_rule(project_id, rule)` — push
 //! - `remove_scope_rule(project_id, index)` — remove by index
 //!
-//! ## §6.7 — Match & replace rules CRUD (Part B lands these)
+//! ## §6.7 — Match & replace rules CRUD
 //! - `list_match_replace_rules(project_id)` — read
 //! - `add_match_replace_rule(project_id, rule)` — push
 //! - `remove_match_replace_rule(project_id, index)` — remove by index
 //!
-//! **State:** all 6 commands read/write the in-memory
-//! `ProjectSettings` cache (`Engine::get_project` /
-//! `Engine::update_project`). **No SQLite write** — the
-//! `ProjectSettings` persistence is a v0.5+ follow-up
-//! (same D3 deferral as Phase 5's `ReplayStore.history`).
+//! **State:** the 6 commands read/write the in-memory
+//! `ProjectSettings` cache (via `Engine::get_project` /
+//! `Engine::update_project`) AND persist to SQLite via
+//! `Engine::save_settings` (Phase 6 Part C, §C-A.1).
 //!
 //! **Drift from the spec:** the spec's §6.2 used
 //! `state.active_project.lock().await` (a unified `AppState`); in
@@ -50,8 +49,9 @@ pub fn list_scope_rules(
 }
 
 /// `add_scope_rule(project_id, rule)` — append a new rule to the
-/// active project's `scope_rules`. In-memory only (v0.5+
-/// persistence is a follow-up).
+/// active project's `scope_rules`. Persists to SQLite via
+/// `Engine::save_settings` so the rule survives an engine
+/// restart (Phase 6 Part C, §C-A.1).
 #[tauri::command]
 pub fn add_scope_rule(
     engine: State<'_, EngineArc>,
@@ -63,14 +63,17 @@ pub fn add_scope_rule(
         .map_err(|e| format!("add_scope_rule failed: {e}"))?;
     project.settings.scope_rules.push(rule);
     engine
-        .update_project(project)
-        .map_err(|e| format!("add_scope_rule persist failed: {e}"))?;
+        .update_project(project.clone())
+        .map_err(|e| format!("add_scope_rule persist (memory) failed: {e}"))?;
+    engine
+        .save_settings(project_id, &project.settings)
+        .map_err(|e| format!("add_scope_rule persist (sqlite) failed: {e}"))?;
     Ok(())
 }
 
 /// `remove_scope_rule(project_id, index)` — remove the rule at
 /// the given index. Returns an error string if the index is
-/// out of bounds.
+/// out of bounds. Persists to SQLite via `Engine::save_settings`.
 #[tauri::command]
 pub fn remove_scope_rule(
     engine: State<'_, EngineArc>,
@@ -88,8 +91,11 @@ pub fn remove_scope_rule(
     }
     project.settings.scope_rules.remove(index);
     engine
-        .update_project(project)
-        .map_err(|e| format!("remove_scope_rule persist failed: {e}"))?;
+        .update_project(project.clone())
+        .map_err(|e| format!("remove_scope_rule persist (memory) failed: {e}"))?;
+    engine
+        .save_settings(project_id, &project.settings)
+        .map_err(|e| format!("remove_scope_rule persist (sqlite) failed: {e}"))?;
     Ok(())
 }
 
@@ -109,7 +115,8 @@ pub fn list_match_replace_rules(
     Ok(project.settings.match_replace_rules)
 }
 
-/// `add_match_replace_rule(project_id, rule)`.
+/// `add_match_replace_rule(project_id, rule)`. Persists to
+/// SQLite via `Engine::save_settings` (Phase 6 Part C, §C-A.1).
 #[tauri::command]
 pub fn add_match_replace_rule(
     engine: State<'_, EngineArc>,
@@ -121,12 +128,16 @@ pub fn add_match_replace_rule(
         .map_err(|e| format!("add_match_replace_rule failed: {e}"))?;
     project.settings.match_replace_rules.push(rule);
     engine
-        .update_project(project)
-        .map_err(|e| format!("add_match_replace_rule persist failed: {e}"))?;
+        .update_project(project.clone())
+        .map_err(|e| format!("add_match_replace_rule persist (memory) failed: {e}"))?;
+    engine
+        .save_settings(project_id, &project.settings)
+        .map_err(|e| format!("add_match_replace_rule persist (sqlite) failed: {e}"))?;
     Ok(())
 }
 
-/// `remove_match_replace_rule(project_id, index)`.
+/// `remove_match_replace_rule(project_id, index)`. Persists to
+/// SQLite via `Engine::save_settings`.
 #[tauri::command]
 pub fn remove_match_replace_rule(
     engine: State<'_, EngineArc>,
@@ -144,8 +155,11 @@ pub fn remove_match_replace_rule(
     }
     project.settings.match_replace_rules.remove(index);
     engine
-        .update_project(project)
-        .map_err(|e| format!("remove_match_replace_rule persist failed: {e}"))?;
+        .update_project(project.clone())
+        .map_err(|e| format!("remove_match_replace_rule persist (memory) failed: {e}"))?;
+    engine
+        .save_settings(project_id, &project.settings)
+        .map_err(|e| format!("remove_match_replace_rule persist (sqlite) failed: {e}"))?;
     Ok(())
 }
 

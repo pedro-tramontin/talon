@@ -27,7 +27,7 @@ pub struct ProjectInfo {
     pub ca_fingerprint: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectSettings {
     /// Default scope rules applied to all exchanges in this project.
     /// (Phase 6 lets the user edit these interactively.)
@@ -105,6 +105,17 @@ impl Project {
                 match_replace_rules: vec![],
                 proxy_enabled: true,
             },
+        }
+    }
+}
+
+impl Default for ProjectSettings {
+    fn default() -> Self {
+        Self {
+            scope_rules: Vec::new(),
+            theme: Theme::default(),
+            match_replace_rules: Vec::new(),
+            proxy_enabled: true,
         }
     }
 }
