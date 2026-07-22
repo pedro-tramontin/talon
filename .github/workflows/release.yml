@@ -142,22 +142,97 @@ jobs:
       - name: Install UI deps + build
         run: pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build
 
-      - name: Build Tauri bundle (macOS)
-        uses: tauri-apps/tauri-action@v0
+      # macOS codesign + notarisation is OPTIONAL. The Tauri CLI reads
+      # APPLE_CERTIFICATE from the env and runs `security import` on it;
+      # an empty value (the case when no secret is configured) makes the
+      # import step fail with `SecKeychainItemImport: One or more
+      # parameters passed to a function were not valid`, which aborts
+      # the bundle step. The whole job then fails, so no .app / .dmg
+      # ever uploads — release-please has already published the GitHub
+      # Release (release-please runs from the tag push, not from this
+      # job's outcome), and the release ships with only Linux + Windows
+      # assets. (Real incident: v0.1.1 + v0.1.2 both shipped without
+      # macOS assets. See docs/release-process.md §4.3a.)
+      #
+      # The fix: two mutually-exclusive steps gated by `if:` on the
+      # presence of the APPLE_CERTIFICATE **secret** (not the env
+      # var — GitHub Actions evaluates `if:` before the step's
+      # `env:` block, so `secrets.APPLE_CERTIFICATE != ''` is the
+      # correct check). The signed path imports the cert into a
+      # build.keychain and then runs tauri-action with the APPLE_*
+      # env vars set. The unsigned path runs tauri-action with NO
+      # APPLE_* env vars at all (separate `env:` block — GitHub
+      # Actions cannot conditionally clear individual env vars
+      # within a single step, so two steps is the only correct way
+      # to get a "no APPLE_* vars on the runner" tauri-action
+      # invocation).
+      #
+      # Result:
+      #   * No APPLE_CERTIFICATE secret  -> unsigned .app + .dmg ship
+      #   * APPLE_CERTIFICATE secret set -> signed + notarised .app + .dmg
+      #
+      # (Reference: Tauri 2 macOS signing docs use the same
+      # keychain-import-as-separate-step pattern. The step ordering
+      # matters — `security import` must succeed before `tauri build`,
+      # which is why the import is its own step rather than a bash
+      # prelude in the build step.)
+
+      - name: Import Apple Developer Certificate
+        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Apple notarisation. Both secrets are stored in the repo's
-          # "Actions secrets" panel as macOS keychain entries, not as
-          # raw values, so this only works if the user has set them up.
-          # The release still produces an un-notarised .dmg if the
-          # secrets are missing; tauri-action logs a warning and the
-          # user can sign/notarise manually.
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          echo "=== Signed macOS build: importing Apple Developer Certificate ==="
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security import certificate.p12 \
+            -k build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          echo "Certificate imported. Running tauri-action..."
+
+      - name: Build Tauri bundle (macOS, signed) — tauri-action
+        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Talon ${{ github.ref_name }}"
+          releaseBody: "See [CHANGELOG.md](https://github.com/pedro-tramontin/talon/blob/${{ github.ref_name }}/CHANGELOG.md) for the full release notes."
+          releaseDraft: true
+          prerelease: false
+          args: --bundles app,dmg --target universal-apple-darwin
+
+      - name: Build Tauri bundle (macOS, unsigned)
+        if: ${{ secrets.APPLE_CERTIFICATE == '' }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Deliberately NO APPLE_* env vars — Tauri 2 reads them at
+          # bundle time and would call `security import` on an empty
+          # value, which fails with SecKeychainItemImport. See the
+          # long comment block above + docs/release-process.md §4.3a.
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Talon ${{ github.ref_name }}"
