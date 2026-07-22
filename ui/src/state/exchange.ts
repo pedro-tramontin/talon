@@ -205,7 +205,7 @@ function createExchangeStore() {
         // Touch the LRU: move the id to the end. If the id
         // is already in the LRU, remove the older occurrence
         // first.
-        let lru = state.detailsLru.filter((x) => x !== id);
+        const lru = state.detailsLru.filter((x) => x !== id);
         lru.push(id);
         // Evict the oldest entry if the cap is exceeded. The
         // cap is checked AFTER the insert so a single insert

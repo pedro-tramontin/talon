@@ -83,6 +83,19 @@ export type UiStore = {
    * debounced effect after a successful
    * `searchExchanges` call. */
   setFilterFtsResults: (ids: ExchangeId[]) => void;
+
+  /**
+   * The main-panel mode. `"capture"` shows the §4.3-4.4
+   * `ExchangeDetail` (the default for v1); `"replay"`
+   * shows the Phase 5 `ReplayView` (tab bar + request
+   * editor + response viewer + history panel). The
+   * `ExchangeList` row's Replay button (added in Phase 5)
+   * flips this to `"replay"` after `useReplayStore.openTab`.
+   */
+  mode: "capture" | "replay";
+
+  /** Switch the main-panel mode. */
+  setMode: (m: "capture" | "replay") => void;
 };
 
 function createUiStore() {
@@ -103,6 +116,12 @@ function createUiStore() {
 
     setFilterFtsResults(ids) {
       set({ filterFtsResults: ids });
+    },
+
+    mode: "capture",
+
+    setMode(m) {
+      set({ mode: m });
     },
   }));
 }

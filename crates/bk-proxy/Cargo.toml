@@ -57,3 +57,5 @@ time = { workspace = true }
 [dev-dependencies]
 x509-parser = "0.16"
 tempfile = "3"
+bk-engine = { workspace = true }
+bk-store = { workspace = true }
