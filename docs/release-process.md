@@ -277,6 +277,88 @@ The body is set by the first build job to finish (via tauri-action's `releaseBod
 
 Add a carve-out to `renovate.json5` under `packageRules` with `matchUpdateTypes: ["major"]` or `matchPackageNames` as appropriate. The next Renovate scan (within `prHourlyLimit: 2`) will pick up the new rule.
 
+### 4.6 `untagged, merged release PRs outstanding - aborting`
+
+This was the failure mode that blocked all 4 release-please runs between **v0.1.3 (2026-07-21) and v0.2.0 (2026-07-22)**, leaving the Phase 5 (replay) + Phase 6 (scope/M&R) work on `main` without a user-installable build for ~30 hours. The release-please run log shows:
+
+```
+✔ Merging 1 pull requests
+❯ Found pull request #60: 'chore: release main'
+⚠ There are untagged, merged release PRs outstanding - aborting
+```
+
+**Root cause (two compounding issues):**
+
+1. **The v0.1.3 tag was created via a workaround, not the standard flow.** The macOS-bundle fix in #61 + #62 took several iterations to land; while debugging, the `release-please--branches--main` branch was manually closed and the v0.1.3 tag was pushed by the `cf1d846 chore: retrigger release-please after cleaning up stale v0.1.3 tag` commit. That left release-please's internal PR-→-tag tracker in a half-state where PR #60 was merged but the bookkeeping thought its tag was missing.
+
+2. **The `linked-versions` plugin in `release-please-config.json` had been silently failing for 2 releases.** The plugin's job is to keep all linked components on the same version line: any feat: commit in any linked crate should bump all 8 crates. It worked correctly for v0.1.1 (all 8 crates bumped in PR #56). For v0.1.2 (PR #58) it only bumped `app` + `bk-events`. For v0.1.3 (PR #60) it only bumped `app`. By v0.1.3, the manifest had 7 distinct versions across 8 entries (`crates/bk-{core,store,engine,proxy,mcp,agent}: 0.1.1`, `crates/bk-events: 0.1.2`, `app: 0.1.3`) — well past the "drift" threshold where the plugin gives up. Every release-please run after #60 saw this diverged manifest and aborted.
+
+**Diagnostic (how to confirm this is the failure mode you're hitting):**
+
+```bash
+# Show the manifest (should have consistent versions if release-please is healthy):
+cat .release-please-manifest.json | jq .
+
+# Show the tag history (compare to manifest):
+git show-ref --tags
+
+# Show the latest release-please run's tail (look for "aborting"):
+gh run list --workflow=release-please.yml --limit 1 --json databaseId \
+  | jq -r '.[0].databaseId' \
+  | xargs -I{} gh run view {} --log \
+  | grep -E '(aborting|untagged|Found pull request)'
+```
+
+**Recovery (the manual v0.2.0 cut):**
+
+The recovery is to do by hand what release-please would have done if it weren't broken — cut a `chore: release main` PR with all 8 crates + `app` at the same version. This is the "drop the `linked-versions` plugin" flow in practice.
+
+```bash
+# 1. Create a release branch off main:
+git checkout -b chore/0.2.0-manual-release main
+
+# 2. Bump all 9 version fields to 0.2.0:
+#    - .release-please-manifest.json (all 8 entries)
+#    - crates/*/Cargo.toml + app/Cargo.toml (9 inline versions)
+#    - app/tauri.conf.json + ui/package.json (extra-files mirrors)
+for f in crates/*/Cargo.toml app/Cargo.toml; do
+  sed -i 's/^version = "0\.1\.[0-9]*"/version = "0.2.0"/' "$f"
+done
+# (then edit .release-please-manifest.json, app/tauri.conf.json,
+#  ui/package.json by hand to the same 0.2.0)
+
+# 3. Regenerate Cargo.lock to pick up the new version pins:
+cargo update --workspace
+
+# 4. Add per-crate CHANGELOG entries for crates that had user-facing
+#    changes since their last changelog entry (matches what release-please
+#    would generate). Crates without changes get a version bump but no
+#    changelog entry. See PR #67 for the format.
+
+# 5. Commit with the release-please standard title (so the next
+#    release-please run sees it as a release-please PR):
+git commit -am "chore: release main"
+
+# 6. Open the PR (the body should match release-please's format):
+gh pr create --title "chore: release main" --body-file /tmp/v0.2.0-body.md
+
+# 7. After CI is green and the PR is merged:
+git checkout main && git pull --ff-only
+git tag -a v0.2.0 -m "Release v0.2.0" HEAD
+git push origin v0.2.0
+# (release.yml fires on the tag push; 3-OS builds + finalize)
+```
+
+**Permanent fix (the v0.2.0 follow-up):**
+
+The `linked-versions` plugin is the root cause of the drift. The follow-up PR drops the plugin from `release-please-config.json`. With no plugin, each package's version bumps independently based on the conventional commits since its own last changelog entry. The per-crate versions may diverge (e.g. `app: 0.3.0` while `crates/*: 0.2.1` after a `app/`-only feature), but the single `v*` tag (per `include-component-in-tag: false` + `include-v-in-tag: true`) still uses the highest version — which will almost always be `app` since it's the most actively changed package. The Tauri app's user-facing version is always correct because `app/tauri.conf.json` and `ui/package.json` are mirrored by the `extra-files` rule from the `app` package's version.
+
+After the fix, a no-op commit to main should produce a clean release-please run that either:
+- No-ops (no feat/fix commits since the last release)
+- Opens a single `chore: release main` PR with one entry per package that had user-facing changes (typically just `app`)
+
+**Why this section exists:** the v0.1.3 → v0.2.0 gap is the first time a release was silently lost to a config-vs-state drift. Without a §4.6 entry, the next session that hits the same symptom would re-derive the diagnosis from the release-please logs and the manifest's divergent state — which is fine for a one-time recovery but wasteful when the same symptom recurs. This section records both the root cause (linked-versions drift) and the canonical recovery (the manual release PR), so future sessions can fix it in one shot.
+
 ---
 
 ## 5. Future work (not yet implemented)
