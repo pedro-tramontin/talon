@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/pedro-tramontin/talon/compare/v0.1.1...v0.2.0) (2026-07-22)
+
+
+### Features
+
+* **bk-proxy:** §6 — scope + match &amp; replace engines, pipeline shim (classify + rewrite) + replay-pipeline E2E test ([#64](https://github.com/pedro-tramontin/talon/issues/64), [#65](https://github.com/pedro-tramontin/talon/issues/65)) ([78fe263](https://github.com/pedro-tramontin/talon/commit/78fe263ee286e97fa3c2f10178f694848b1f41af))
+
 ## [0.1.1](https://github.com/pedro-tramontin/talon/compare/v0.1.0...v0.1.1) (2026-07-21)
 
 

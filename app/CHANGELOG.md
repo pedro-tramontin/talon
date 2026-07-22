@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0](https://github.com/pedro-tramontin/talon/compare/v0.1.3...v0.2.0) (2026-07-22)
+
+
+### Features
+
+* **app,ui:** scope rule editor + Settings modal + Match &amp; Replace editor ([#66](https://github.com/pedro-tramontin/talon/issues/66)) ([bf29044](https://github.com/pedro-tramontin/talon/commit/bf29044ddca622004e31542578925e56f51b0a8b))
+* **app,ui:** scope + match &amp; replace engines, Tauri CRUD commands, pipeline shim ([#65](https://github.com/pedro-tramontin/talon/issues/65)) ([98137cd](https://github.com/pedro-tramontin/talon/commit/98137cd2a4daa43cfa77b6e29523017b82c41f65))
+* **app,ui:** §5.4+§5.5+§5.6 replay view, request editor, history panel + WireEvent arm + smoke test ([#64](https://github.com/pedro-tramontin/talon/issues/64)) ([78fe263](https://github.com/pedro-tramontin/talon/commit/78fe263ee286e97fa3c2f10178f694848b1f41af))
+* **app:** §5.1+§5.2+§5.3 replay Tauri commands (open_replay_tab, send_replay) + ReplayStore + WireEvent::Replay variant ([#63](https://github.com/pedro-tramontin/talon/issues/63)) ([00262df](https://github.com/pedro-tramontin/talon/commit/00262df00687878391ffda143c4bd053bc1868c6))
+
+
+### Bug Fixes
+
+* **ci:** ship unsigned macOS bundle without breaking release.yml (no `if:`) ([#62](https://github.com/pedro-tramontin/talon/issues/62)) ([02dda93](https://github.com/pedro-tramontin/talon/commit/02dda933ce823b8905e034de4bfb95139e13c62e))
+* **ci:** ship unsigned macOS `.dmg` when `APPLE_CERTIFICATE` is absent ([#61](https://github.com/pedro-tramontin/talon/issues/61)) ([e6bf006](https://github.com/pedro-tramontin/talon/commit/e6bf00674b165f6e60cbf931f492ef1c2a570c39))
+
 ## [0.1.3](https://github.com/pedro-tramontin/talon/compare/v0.1.2...v0.1.3) (2026-07-21)
 
 

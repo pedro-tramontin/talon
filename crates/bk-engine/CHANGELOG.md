@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/pedro-tramontin/talon/compare/v0.1.1...v0.2.0) (2026-07-22)
+
+
+### Features
+
+* **bk-engine:** wire scope + match &amp; replace pipeline into projects store via `Engine::get_project` accessor ([#65](https://github.com/pedro-tramontin/talon/issues/65)) ([98137cd](https://github.com/pedro-tramontin/talon/commit/98137cd2a4daa43cfa77b6e29523017b82c41f65))
+
 ## [0.1.1](https://github.com/pedro-tramontin/talon/compare/v0.1.0...v0.1.1) (2026-07-21)
 
 
