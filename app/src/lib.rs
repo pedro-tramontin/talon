@@ -148,6 +148,16 @@ pub fn run() {
             commands::search::search_exchanges,
             commands::replay::open_replay_tab,
             commands::replay::send_replay,
+            // Phase 6 (§6.2 + §6.7) — scope rule + match & replace
+            // CRUD. The M&R commands are registered here alongside
+            // the scope commands because the same `scope.rs` module
+            // owns both; Part B's UI editor uses the M&R commands.
+            commands::scope::list_scope_rules,
+            commands::scope::add_scope_rule,
+            commands::scope::remove_scope_rule,
+            commands::scope::list_match_replace_rules,
+            commands::scope::add_match_replace_rule,
+            commands::scope::remove_match_replace_rule,
             agent::agent_start,
             agent::agent_confirm_write,
             agent::agent_cancel,

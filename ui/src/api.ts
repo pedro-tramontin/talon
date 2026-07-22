@@ -30,6 +30,12 @@ export type {
   ProxyStatus,
   ScopeState,
   ProxyState,
+  // Phase 6 (§6.6 + §6.7) additions.
+  ScopeRule,
+  ScopeRuleKind,
+  MatchAction,
+  MatchReplaceRule,
+  MatchReplaceTarget,
 } from "./types/domain";
 
 export interface Greeting {
@@ -146,6 +152,10 @@ import type {
   ExchangeId as DomainExchangeId,
   ProjectId as DomainProjectId,
 } from "./types/ids";
+import type {
+  MatchReplaceRule,
+  ScopeRule,
+} from "./types/domain";
 import type {
   ExchangeDetail,
   ExchangeListPage,
@@ -287,4 +297,77 @@ export async function sendReplay(
     projectId,
     requestJson: JSON.stringify(request),
   });
+}
+
+
+// ---------------------------------------------------------------------------
+// Phase 6 (§6.2 + §6.7) — scope rules + match & replace rules CRUD.
+// ---------------------------------------------------------------------------
+
+/**
+ * List the active project's scope rules. Empty array if the
+ * project has no rules. The UI's `ScopeRuleEditor` calls this
+ * on mount to populate the list.
+ */
+export async function listScopeRules(
+  projectId: DomainProjectId,
+): Promise<ScopeRule[]> {
+  return await invoke<ScopeRule[]>("list_scope_rules", { projectId });
+}
+
+/**
+ * Append a new scope rule to the active project. The UI
+ * generates the rule client-side (a default with empty
+ * pattern) and the backend assigns no ID; the rule is
+ * stored at the end of `Project::settings::scope_rules`.
+ */
+export async function addScopeRule(
+  projectId: DomainProjectId,
+  rule: ScopeRule,
+): Promise<void> {
+  await invoke<void>("add_scope_rule", { projectId, rule });
+}
+
+/**
+ * Remove a scope rule by its index in `Project::settings::scope_rules`.
+ * Returns the backend's error string on out-of-bounds (the
+ * UI prevents this client-side, but the guard is in the
+ * backend too).
+ */
+export async function removeScopeRule(
+  projectId: DomainProjectId,
+  index: number,
+): Promise<void> {
+  await invoke<void>("remove_scope_rule", { projectId, index });
+}
+
+/**
+ * List the active project's match & replace rules.
+ */
+export async function listMatchReplaceRules(
+  projectId: DomainProjectId,
+): Promise<MatchReplaceRule[]> {
+  return await invoke<MatchReplaceRule[]>("list_match_replace_rules", {
+    projectId,
+  });
+}
+
+/**
+ * Append a new M&R rule.
+ */
+export async function addMatchReplaceRule(
+  projectId: DomainProjectId,
+  rule: MatchReplaceRule,
+): Promise<void> {
+  await invoke<void>("add_match_replace_rule", { projectId, rule });
+}
+
+/**
+ * Remove an M&R rule by index.
+ */
+export async function removeMatchReplaceRule(
+  projectId: DomainProjectId,
+  index: number,
+): Promise<void> {
+  await invoke<void>("remove_match_replace_rule", { projectId, index });
 }
