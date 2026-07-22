@@ -34,22 +34,6 @@
       "release-type": "rust"
     }
   },
-  "plugins": [
-    {
-      "type": "linked-versions",
-      "groupName": "talon",
-      "components": [
-        "bk-core",
-        "bk-store",
-        "bk-engine",
-        "bk-proxy",
-        "bk-mcp",
-        "bk-agent",
-        "bk-events",
-        "app"
-      ]
-    }
-  ],
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
   "draft": false,
