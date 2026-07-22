@@ -35,6 +35,7 @@ import { ExchangeDetail } from "../components/ExchangeDetail";
 import { ExchangeList } from "../components/ExchangeList";
 import { RightRail } from "../components/RightRail";
 import { ReplayView } from "../components/ReplayView";
+import { ScopeRuleEditor } from "../components/ScopeRuleEditor";
 import type {
   ExchangeDetail as ExchangeDetailType,
   ExchangeSummary,
@@ -125,6 +126,7 @@ function ProjectDropdown() {
   const projects = useProjectStore((s) => s.projects);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const setActiveProject = useProjectStore((s) => s.setActiveProject);
+  const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
 
   return (
     <div className="flex items-center gap-2">
@@ -151,6 +153,16 @@ function ProjectDropdown() {
           </option>
         ))}
       </select>
+      {/* Phase 6 §6.7: the Settings button opens the modal that
+       * hosts the M&R editor. Lives in the top bar per the
+       * spec's "Add a Settings button to the TopBar" line. */}
+      <button
+        data-testid="capture-settings-button"
+        onClick={() => setSettingsOpen(true)}
+        className="ml-2 rounded border border-slate-700 bg-transparent px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-accent"
+      >
+        Settings
+      </button>
     </div>
   );
 }
@@ -161,15 +173,23 @@ function ProjectDropdown() {
  * `data-testid="capture-left-rail"` stays on the outer
  * element so the Capture.test.tsx layout assertion (width
  * pinning) still works.
+ *
+ * Phase 6 §6.6: the `<ScopeRuleEditor />` sits below the
+ * list in the same column. The editor is a separate
+ * component so the test surface is independent of the
+ * list's virtualizer.
  */
 function ExchangeLeftRail() {
   return (
     <aside
       data-testid="capture-left-rail"
-      className="h-full"
+      className="flex h-full flex-col"
       style={{ width: `${LEFT_RAIL_PX}px` }}
     >
-      <ExchangeList />
+      <div className="flex-1 overflow-hidden">
+        <ExchangeList />
+      </div>
+      <ScopeRuleEditor />
     </aside>
   );
 }
