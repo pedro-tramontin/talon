@@ -14,8 +14,25 @@
 // if no project is open, the editor renders an empty state
 // with the same "No rules" hint (the backend would have
 // returned an error on the IPC call; we degrade gracefully).
+//
+// ## Phase 7 C-B.4 — SecLists bulk-import
+//
+// A "Bulk import" button next to the existing "+ Add"
+// button. The user picks a `.txt` / `.lst` file; the
+// component reads the file via `FileReader.readAsText`
+// (no Tauri command — client-side only), parses with
+// `parseSecListsHosts` (the pure helper in
+// `../lib/scope_bulk_import.ts`), and adds each parsed
+// host as a `ScopeRule { kind: Host, pattern: <host>,
+// action: InScope, label: "imported", priority: 0 }`
+// via the existing `addScopeRule` Tauri command.
+//
+// The parser drops comments (`#` and `//`), blank lines,
+// wildcard lines (`*.` prefix; the per-row editor
+// handles wildcards), and duplicates against the
+// existing rules array.
 
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useProjectStore } from "../state/project";
 import { useUiStore } from "../state/ui";
 import {
@@ -23,6 +40,7 @@ import {
   listScopeRules,
   removeScopeRule,
 } from "../api";
+import { parseSecListsHosts } from "../lib/scope_bulk_import";
 import type { MatchAction, ScopeRule, ScopeRuleKind } from "../types/domain";
 
 /**
@@ -52,6 +70,16 @@ export function ScopeRuleEditor() {
   const scopeRules = useUiStore((s) => s.scopeRules);
   const setScopeRules = useUiStore((s) => s.setScopeRules);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
+
+  // Phase 7 C-B.4: bulk-import state. The `fileInputRef`
+  // is a hidden `<input type="file">`; clicking the
+  // "Bulk import" button triggers `.click()` on it.
+  // The `bulkImportError` is shown below the button on
+  // failure (a 0-hosts file, a FileReader error, etc.).
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [bulkImportError, setBulkImportError] = useState<string | null>(
+    null,
+  );
 
   // Pull the active project's rules on mount + when the
   // active project changes. The `useProjectStore` change
@@ -98,6 +126,55 @@ export function ScopeRuleEditor() {
     }
   };
 
+  // Phase 7 C-B.4: bulk-import handler. Reads the file,
+  // parses it, and calls `addScopeRule` for each parsed
+  // host. Optimistic local update — the new rules are
+  // appended to the store immediately.
+  const handleBulkImport = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    if (!activeProjectId) return;
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBulkImportError(null);
+    try {
+      const text = await file.text();
+      const parsed = parseSecListsHosts(text, scopeRules);
+      if (parsed.length === 0) {
+        setBulkImportError("No hosts found in file.");
+        return;
+      }
+      const newRules: ScopeRule[] = parsed.map(({ host }) => ({
+        kind: "host",
+        pattern: host,
+        action: "in_scope",
+        label: "imported",
+        priority: 0,
+      }));
+      // Fire `addScopeRule` for each rule in sequence
+      // (avoids hammering the IPC bridge on a 1000-line
+      // file; the rules are an append-mostly log).
+      const appended: ScopeRule[] = [];
+      for (const rule of newRules) {
+        try {
+          await addScopeRule(activeProjectId, rule);
+          appended.push(rule);
+        } catch (err) {
+          console.error("addScopeRule failed during bulk-import:", err);
+        }
+      }
+      setScopeRules([...scopeRules, ...appended]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setBulkImportError(`Bulk import failed: ${msg}`);
+    } finally {
+      // Reset the input so the same file can be re-picked
+      // (e.g. after an error) — `change` doesn't fire if
+      // the user re-selects the same file otherwise.
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
   return (
     <div
       data-testid="scope-rule-editor"
@@ -110,15 +187,41 @@ export function ScopeRuleEditor() {
         >
           Scope rules
         </h2>
-        <button
-          data-testid="scope-rule-editor-add"
-          onClick={addNew}
-          disabled={!activeProjectId}
-          className="text-xs text-accent hover:text-cyan-300 disabled:opacity-40"
-        >
-          + Add
-        </button>
+        <div className="flex gap-2">
+          <button
+            data-testid="scope-rule-editor-add"
+            onClick={addNew}
+            disabled={!activeProjectId}
+            className="text-xs text-accent hover:text-cyan-300 disabled:opacity-40"
+          >
+            + Add
+          </button>
+          <button
+            data-testid="scope-rule-editor-bulk-import"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!activeProjectId}
+            className="text-xs text-accent hover:text-cyan-300 disabled:opacity-40"
+          >
+            Bulk import
+          </button>
+          <input
+            ref={fileInputRef}
+            data-testid="scope-rule-editor-bulk-import-file"
+            type="file"
+            accept=".txt,.lst"
+            onChange={handleBulkImport}
+            className="hidden"
+          />
+        </div>
       </div>
+      {bulkImportError && (
+        <p
+          data-testid="scope-rule-editor-bulk-import-error"
+          className="mb-2 text-xs text-red-400"
+        >
+          {bulkImportError}
+        </p>
+      )}
       <div
         data-testid="scope-rule-editor-list"
         className="space-y-1"

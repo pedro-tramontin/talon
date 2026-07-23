@@ -13,6 +13,11 @@ import { createStore, useStore } from "zustand";
 import type { StoreApi } from "zustand/vanilla";
 import type { ExchangeId } from "../types/ids";
 import type { MatchReplaceRule, ScopeRule } from "../types/domain";
+import {
+  addMatchReplaceRule,
+  removeMatchReplaceRule,
+} from "../api";
+import type { ProjectId } from "../types/ids";
 
 /**
  * The four tabs in the §4.7 right-rail layout. Order is
@@ -127,6 +132,28 @@ export type UiStore = {
   setMatchReplaceRules: (rules: MatchReplaceRule[]) => void;
 
   /**
+   * Update a single M&R rule by index (Phase 7 C-B.3). The
+   * `addMatchReplaceRule` Tauri command is push-only; an
+   * edit is therefore a remove + add round-trip. The
+   * action reads the current rules from the store,
+   * removes the rule at `idx` on the backend, adds the
+   * patched rule, and optimistically replaces the local
+   * `matchReplaceRules[idx]` with the new rule.
+   *
+   * The action is a thin wrapper around the existing
+   * IPC commands; there is no new Tauri command for the
+   * edit case. If either IPC call fails, the local
+   * store is left unchanged (the error is logged to
+   * `console.error`; the UI degrades silently — the
+   * user can re-try by editing again).
+   */
+  updateMatchReplaceRule: (
+    projectId: ProjectId,
+    idx: number,
+    patch: Partial<MatchReplaceRule>,
+  ) => Promise<void>;
+
+  /**
    * Whether the Settings modal is open. Flipped by the
    * "Settings" button in the top bar; closes on overlay
    * click or on the explicit close button.
@@ -138,7 +165,7 @@ export type UiStore = {
 };
 
 function createUiStore() {
-  return createStore<UiStore>((set) => ({
+  return createStore<UiStore>((set, get) => ({
     activeRightTab: DEFAULT_RIGHT_TAB,
 
     setActiveRightTab(tab) {
@@ -173,6 +200,34 @@ function createUiStore() {
 
     setMatchReplaceRules(rules) {
       set({ matchReplaceRules: rules });
+    },
+
+    async updateMatchReplaceRule(projectId, idx, patch) {
+      const current = get().matchReplaceRules;
+      const existing = current[idx];
+      if (!existing) return;
+      const next: MatchReplaceRule = { ...existing, ...patch };
+      try {
+        // Round-trip: remove the old rule, add the new one.
+        // The Rust side does not have a dedicated
+        // "update" command (the Tauri IPC surface is
+        // push-only by design — the rules are an
+        // append-mostly log).
+        await removeMatchReplaceRule(projectId, idx);
+        await addMatchReplaceRule(projectId, next);
+        // Optimistic local update: replace the rule at
+        // `idx` with the patched one. If either IPC call
+        // failed, we throw before this line, leaving the
+        // store unchanged (the user can retry).
+        set((s) => ({
+          matchReplaceRules: s.matchReplaceRules.map((r, i) =>
+            i === idx ? next : r,
+          ),
+        }));
+      } catch (e) {
+        console.error("updateMatchReplaceRule failed:", e);
+        throw e;
+      }
     },
 
     settingsOpen: false,
