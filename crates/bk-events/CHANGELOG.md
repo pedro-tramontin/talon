@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/pedro-tramontin/talon/compare/v0.2.0...v0.2.1) (2026-07-23)
+
+
+### Features
+
+* **bk-events:** §7b v0.5+ — `tauri::ipc::Json<Request>` direct-arg refactor for `send_replay` (skip JSON-string round-trip) ([#73](https://github.com/pedro-tramontin/talon/pull/73)) ([8f32e25](https://github.com/pedro-tramontin/talon/commit/8f32e25))
+
+
 ## [0.2.0](https://github.com/pedro-tramontin/talon/compare/v0.1.2...v0.2.0) (2026-07-22)
 
 
