@@ -199,4 +199,163 @@ describe("ReplayRequestEditor", () => {
     expect(replayStore.getState().tabs[0].history).toHaveLength(1);
     expect(replayStore.getState().tabs[0].history[0].response).toBeNull();
   });
+
+  // Phase 7 C-B.5: Raw / Pretty sub-tabs + same-tab re-sync.
+
+  it("switching to the Pretty tab with a JSON body renders the JsonTreeView", async () => {
+    const req = {
+      method: "POST" as const,
+      url: "https://example.com/api",
+      version: "HTTP/1.1" as const,
+      headers: {} as Record<string, string>,
+      body: { kind: "complete" as const, data: btoa('{"a":1}') },
+    };
+    const id = replayStore.getState().openTab({
+      exchangeId: newExchangeId(),
+      summary: "POST /api",
+      request: req,
+      response: null,
+      projectId: projectStore.getState().activeProjectId!,
+    });
+    render(<ReplayRequestEditor tabId={id} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("replay-request-editor-tab-pretty"));
+    });
+    expect(
+      screen.getByTestId("replay-request-editor-pretty-json"),
+    ).toBeTruthy();
+  });
+
+  it("switching to the Pretty tab with a form-data body renders the key-value table", async () => {
+    const req = {
+      method: "POST" as const,
+      url: "https://example.com/api",
+      version: "HTTP/1.1" as const,
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+      } as Record<string, string>,
+      body: { kind: "complete" as const, data: btoa("a=1&b=hello%20world") },
+    };
+    const id = replayStore.getState().openTab({
+      exchangeId: newExchangeId(),
+      summary: "POST /api",
+      request: req,
+      response: null,
+      projectId: projectStore.getState().activeProjectId!,
+    });
+    render(<ReplayRequestEditor tabId={id} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("replay-request-editor-tab-pretty"));
+    });
+    expect(
+      screen.getByTestId("replay-request-editor-pretty-form"),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("replay-request-editor-pretty-form-row-0"),
+    ).toBeTruthy();
+  });
+
+  it("switching to the Pretty tab with an unrecognized body shows the fallback message", async () => {
+    const req = {
+      method: "POST" as const,
+      url: "https://example.com/api",
+      version: "HTTP/1.1" as const,
+      headers: {} as Record<string, string>,
+      body: { kind: "complete" as const, data: btoa("just some text") },
+    };
+    const id = replayStore.getState().openTab({
+      exchangeId: newExchangeId(),
+      summary: "POST /api",
+      request: req,
+      response: null,
+      projectId: projectStore.getState().activeProjectId!,
+    });
+    render(<ReplayRequestEditor tabId={id} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("replay-request-editor-tab-pretty"));
+    });
+    expect(
+      screen.getByTestId("replay-request-editor-pretty-fallback"),
+    ).toBeTruthy();
+  });
+
+  it("the Raw tab renders the textarea unchanged after a Pretty switch + back", async () => {
+    const req = {
+      method: "POST" as const,
+      url: "https://example.com/api",
+      version: "HTTP/1.1" as const,
+      headers: {} as Record<string, string>,
+      body: { kind: "complete" as const, data: btoa('{"a":1}') },
+    };
+    const id = replayStore.getState().openTab({
+      exchangeId: newExchangeId(),
+      summary: "POST /api",
+      request: req,
+      response: null,
+      projectId: projectStore.getState().activeProjectId!,
+    });
+    render(<ReplayRequestEditor tabId={id} />);
+    // The body textarea is shown by default.
+    const body = screen.getByTestId(
+      "replay-request-editor-body",
+    ) as HTMLTextAreaElement;
+    expect(body.value).toBe('{"a":1}');
+    // Switch to Pretty.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("replay-request-editor-tab-pretty"));
+    });
+    // Back to Raw.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("replay-request-editor-tab-raw"));
+    });
+    // The textarea is back, with the same value.
+    const bodyAfter = screen.getByTestId(
+      "replay-request-editor-body",
+    ) as HTMLTextAreaElement;
+    expect(bodyAfter.value).toBe('{"a":1}');
+  });
+
+  it("a same-tab setDraft (the 'fork from history' path) re-syncs the textareas", async () => {
+    const id = replayStore.getState().openTab({
+      exchangeId: newExchangeId(),
+      summary: "GET /path",
+      request: REQ,
+      response: null,
+      projectId: projectStore.getState().activeProjectId!,
+    });
+    render(<ReplayRequestEditor tabId={id} />);
+    // Initial state: the body is the base64-decoded "hello".
+    const body = screen.getByTestId(
+      "replay-request-editor-body",
+    ) as HTMLTextAreaElement;
+    expect(body.value).toBe("hello");
+    // Simulate the "fork from history" path: the
+    // ReplayHistoryPanel calls `setDraft` with a new
+    // request in the same tab. The same-tab re-sync
+    // effect re-syncs the textareas.
+    const newReq = {
+      method: "POST" as const,
+      url: "https://example.com/forked",
+      version: "HTTP/1.1" as const,
+      headers: { "x-fork": "1" } as Record<string, string>,
+      body: { kind: "complete" as const, data: btoa("forked body") },
+    };
+    await act(async () => {
+      replayStore.getState().setDraft(id, newReq);
+    });
+    await waitFor(() => {
+      const bodyAfter = screen.getByTestId(
+        "replay-request-editor-body",
+      ) as HTMLTextAreaElement;
+      expect(bodyAfter.value).toBe("forked body");
+    });
+    const line = screen.getByTestId(
+      "replay-request-editor-line",
+    ) as HTMLInputElement;
+    expect(line.value).toBe("POST https://example.com/forked");
+    const headers = screen.getByTestId(
+      "replay-request-editor-headers",
+    ) as HTMLTextAreaElement;
+    expect(headers.value).toContain("x-fork: 1");
+  });
 });

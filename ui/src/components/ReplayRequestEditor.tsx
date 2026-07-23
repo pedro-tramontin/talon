@@ -16,6 +16,31 @@
 // of the base64 chars instead of the decoded bytes.
 //
 // Phase 5 — §5.4.
+//
+// ## Phase 7 C-B.5 — Raw / Pretty sub-tabs + "fork from
+// history" same-tab re-sync
+//
+// The body textarea is now wrapped in a Raw/Pretty sub-tab
+// strip. Default: "Raw" (the existing textarea).
+//   - "Pretty" with a JSON body → a `JsonTreeView` of the
+//     parsed object (read-only in v1; a separate v0.5+ item
+//     would add a "Pretty edit" mode).
+//   - "Pretty" with a form-data body (key=val OR
+//     `Content-Type: application/x-www-form-urlencoded`)
+//     → a key-value table.
+//   - "Pretty" with an unrecognized body → a fallback
+//     message ("Pretty view unavailable for this body").
+//   - Pretty view is capped at 1 MB (matches the Phase 5
+//     + Phase 7 C-A.4 body cap).
+//
+// A second `useEffect` keyed on `JSON.stringify(tab.draftRequest)`
+// re-syncs the textareas when the draft changes in the
+// same tab (the original `tab?.id` keyed effect only
+// handled tab switches). This is the load-bearing piece
+// for the "fork from history" action — the
+// `ReplayHistoryPanel`'s "Fork" button mutates
+// `tab.draftRequest` via `setDraft`, and the textareas
+// need to re-sync to show the new content.
 
 import { useEffect, useState } from "react";
 import { decodeBodyUtf8 } from "../lib/body-decode";
@@ -23,12 +48,24 @@ import { sendReplay } from "../api";
 import { useReplayStore } from "../state/replay";
 import { useExchangeStore } from "../state/exchange";
 import { useProjectStore } from "../state/project";
+import { JsonTreeView } from "./JsonTreeView";
+import { parseFormData } from "../lib/form_data";
 import type {
   ExchangeBody,
   ExchangeRequest,
   ExchangeResponse,
 } from "../types/domain";
 import type { ExchangeId } from "../types/ids";
+
+/** 1 MB cap on the Pretty view (matches the Phase 5 +
+ *  Phase 7 C-A.4 body caps). The Raw textarea shows the
+ *  full body regardless. */
+const PRETTY_VIEW_BODY_CAP = 1_000_000;
+
+/** "Raw" or "Pretty" sub-tab state (per-component, not
+ *  in the store — the user can switch freely without
+ *  round-tripping through the IPC). */
+type BodyView = "raw" | "pretty";
 
 interface Props {
   tabId: string;
@@ -47,6 +84,10 @@ export function ReplayRequestEditor({ tabId }: Props) {
   const [headersText, setHeadersText] = useState("");
   const [bodyText, setBodyText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Phase 7 C-B.5: which sub-tab is active. Default
+  // "raw" matches the v0.1 behavior (the existing
+  // textarea was always shown).
+  const [bodyView, setBodyView] = useState<BodyView>("raw");
 
   // Re-sync the textareas on tab switch (NOT on every
   // keystroke). The v0.5 pattern: the parent passes
@@ -70,6 +111,35 @@ export function ReplayRequestEditor({ tabId }: Props) {
     // `setDraft` (which mutates the store) but we don't
     // need to re-sync the textareas on every keystroke.
   }, [tab?.id]);
+
+  // Phase 7 C-B.5 (D3 spec drift fix): same-tab re-sync.
+  // When `tab.draftRequest` changes WITHOUT a tab switch
+  // (e.g. the "fork from history" action calls `setDraft`
+  // on the active tab), the textareas need to re-sync.
+  // The textarea-to-store path already flows through
+  // `setDraft` on every keystroke, so this effect is
+  // idempotent — it only fires when the draft *content*
+  // changes from outside the editor.
+  useEffect(() => {
+    if (!tab) return;
+    const r = tab.draftRequest;
+    const nextLine = `${r.method} ${r.url}`;
+    const nextHeaders = Object.entries(r.headers)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("\n");
+    const nextBody = decodeBodyUtf8(r.body) ?? "";
+    // Only re-sync if the content actually changed
+    // (the keystroke path is identical; we just don't
+    // want to clobber the user's in-flight edits).
+    setRequestLine((cur) => (cur === nextLine ? cur : nextLine));
+    setHeadersText((cur) => (cur === nextHeaders ? cur : nextHeaders));
+    setBodyText((cur) => (cur === nextBody ? cur : nextBody));
+    // We depend on the stringified draft so a new
+    // reference with the same content is a no-op
+    // (per-keystroke `setDraft` calls produce a new
+    // reference, but the `cur === next` guard means
+    // we don't clobber).
+  }, [tab ? JSON.stringify(tab.draftRequest) : null]);
 
   if (!tab) return null;
 
@@ -145,6 +215,113 @@ export function ReplayRequestEditor({ tabId }: Props) {
     }
   };
 
+  // Phase 7 C-B.5: Pretty view rendering. The body
+  // rendering is chosen based on (a) the active tab
+  // (`Pretty` vs `Raw`) and (b) the body content +
+  // Content-Type header.
+  const isOverCap = bodyText.length > PRETTY_VIEW_BODY_CAP;
+  const contentType = (() => {
+    for (const line of headersText.split("\n")) {
+      const m = line.match(/^[^:]+:\s*(.*)$/);
+      if (!m) continue;
+      const name = line.split(":")[0].trim().toLowerCase();
+      if (name === "content-type") return m[1].trim().toLowerCase();
+    }
+    return "";
+  })();
+  const trimmedBody = bodyText.trim();
+  const isFormDataByContentType = contentType.includes(
+    "application/x-www-form-urlencoded",
+  );
+  const isFormDataByShape = /^[^\s=]+=/.test(trimmedBody);
+  const isFormData = isFormDataByContentType || isFormDataByShape;
+  const isJson = trimmedBody.startsWith("{") || trimmedBody.startsWith("[");
+  const prettyRender = (() => {
+    if (isOverCap) {
+      return (
+        <p
+          data-testid="replay-request-editor-pretty-cap"
+          className="text-xs italic text-slate-500"
+        >
+          Body too large for Pretty view (&gt; {PRETTY_VIEW_BODY_CAP}{" "}
+          bytes). Switch to Raw to see the full body.
+        </p>
+      );
+    }
+    if (isJson) {
+      try {
+        const parsed = JSON.parse(bodyText);
+        return (
+          <div
+            data-testid="replay-request-editor-pretty-json"
+            className="rounded border border-slate-700 bg-slate-900 p-2"
+          >
+            <JsonTreeView value={parsed} />
+          </div>
+        );
+      } catch {
+        return (
+          <p
+            data-testid="replay-request-editor-pretty-fallback"
+            className="text-xs italic text-slate-500"
+          >
+            Pretty view unavailable: invalid JSON.
+          </p>
+        );
+      }
+    }
+    if (isFormData) {
+      const pairs = parseFormData(bodyText);
+      return (
+        <div
+          data-testid="replay-request-editor-pretty-form"
+          className="rounded border border-slate-700 bg-slate-900 p-2"
+        >
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-slate-400">
+                <th className="py-1">Key</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pairs.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={2}
+                    data-testid="replay-request-editor-pretty-form-empty"
+                    className="py-2 text-center italic text-slate-500"
+                  >
+                    (empty)
+                  </td>
+                </tr>
+              ) : (
+                pairs.map(([k, v], i) => (
+                  <tr
+                    key={i}
+                    data-testid={`replay-request-editor-pretty-form-row-${i}`}
+                    className="border-t border-slate-700"
+                  >
+                    <td className="py-1 font-mono text-slate-300">{k}</td>
+                    <td className="font-mono text-slate-300">{v}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+    return (
+      <p
+        data-testid="replay-request-editor-pretty-fallback"
+        className="text-xs italic text-slate-500"
+      >
+        Pretty view unavailable for this body.
+      </p>
+    );
+  })();
+
   return (
     <div
       data-testid="replay-request-editor"
@@ -164,13 +341,48 @@ export function ReplayRequestEditor({ tabId }: Props) {
         placeholder="Header-Name: value"
         className="h-24 resize-y rounded border border-slate-600 bg-bg-panel px-2 py-1 font-mono text-slate-100 focus:border-accent focus:outline-none"
       />
-      <textarea
-        data-testid="replay-request-editor-body"
-        value={bodyText}
-        onChange={(e) => setBodyText(e.target.value)}
-        placeholder="Body (text or base64-encoded binary)"
-        className="flex-1 resize-none rounded border border-slate-600 bg-bg-panel px-2 py-1 font-mono text-slate-100 focus:border-accent focus:outline-none"
-      />
+      <div className="flex gap-1">
+        <button
+          type="button"
+          data-testid="replay-request-editor-tab-raw"
+          onClick={() => setBodyView("raw")}
+          className={`rounded px-2 py-1 text-xs ${
+            bodyView === "raw"
+              ? "bg-accent text-bg-base"
+              : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+          }`}
+        >
+          Raw
+        </button>
+        <button
+          type="button"
+          data-testid="replay-request-editor-tab-pretty"
+          onClick={() => setBodyView("pretty")}
+          className={`rounded px-2 py-1 text-xs ${
+            bodyView === "pretty"
+              ? "bg-accent text-bg-base"
+              : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+          }`}
+        >
+          Pretty
+        </button>
+      </div>
+      {bodyView === "raw" ? (
+        <textarea
+          data-testid="replay-request-editor-body"
+          value={bodyText}
+          onChange={(e) => setBodyText(e.target.value)}
+          placeholder="Body (text or base64-encoded binary)"
+          className="flex-1 resize-none rounded border border-slate-600 bg-bg-panel px-2 py-1 font-mono text-slate-100 focus:border-accent focus:outline-none"
+        />
+      ) : (
+        <div
+          data-testid="replay-request-editor-pretty"
+          className="flex-1 overflow-auto rounded border border-slate-600 bg-bg-panel p-2"
+        >
+          {prettyRender}
+        </div>
+      )}
       {error && (
         <p
           data-testid="replay-request-editor-error"

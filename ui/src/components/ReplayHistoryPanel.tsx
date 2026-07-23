@@ -6,10 +6,16 @@
 // to load semantics"). The user can then click Send to
 // re-send, or edit first.
 //
+// A "Fork" button per row (Phase 7 C-B.5) is a shortcut
+// for the click-to-load flow: it calls the same
+// `setDraft(tabId, entry.request)` so the user can then
+// click Send (or edit first). The button is a UI
+// affordance, not a separate IPC round-trip.
+//
 // Empty state: "No sends yet." (the vitest case pins
 // this).
 //
-// Phase 5 — §5.5.
+// Phase 5 — §5.5. Phase 7 C-B.5 — Fork button.
 
 import { useReplayStore } from "../state/replay";
 
@@ -72,6 +78,18 @@ export function ReplayHistoryPanel({ tabId }: Props) {
                 <span className="text-[10px] text-slate-500">
                   {entry.timestamp.toLocaleTimeString()}
                 </span>
+                <button
+                  type="button"
+                  data-testid={`replay-history-panel-fork-${realIndex}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDraft(tabId, entry.request);
+                  }}
+                  className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-accent hover:bg-slate-700"
+                  aria-label="Fork this send"
+                >
+                  Fork
+                </button>
               </div>
             </div>
           );
