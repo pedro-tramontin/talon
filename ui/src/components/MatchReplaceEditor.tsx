@@ -6,9 +6,8 @@
 // enabled, remove. Adding a new rule generates a default
 // with an empty pattern + enabled; the user can edit
 // pattern / replace / toggles / priority / target in
-// subsequent UI (the v0.1 form fields are read-only
-// placeholders for the future v0.5 "edit a row" UI — the
-// spec's lines 813-838 only require the CRUD surface).
+// place (Phase 7 C-B.3 added the per-cell edit affordances;
+// the v0.1 cells were read-only placeholders).
 //
 // The "active project" is read from `useProjectStore` —
 // the M&R editor degrades gracefully when no project is
@@ -26,6 +25,25 @@
 // not the source of truth; the wire behavior is the
 // Rust engine's. The "Test" button is a best-effort UI
 // preview.
+//
+// ## Phase 7 C-B.3 — M&R row-edit (per-cell inputs)
+//
+// Each cell is now an input (not a text label):
+//   - `target` → `<select>` (request_url /
+//     request_header / request_body)
+//   - `pattern` → `<input type="text">`
+//   - `replace` → `<input type="text">`
+//   - `is_regex` → `<input type="checkbox">`
+//   - `priority` → `<input type="number">` (accepts
+//     negatives; the engine's `MatchReplace::apply`
+//     sorts descending so -1 sorts after 0)
+//   - `enabled` → `<input type="checkbox">`
+//
+// An "edit" is a remove + add round-trip: the existing
+// `addMatchReplaceRule` Tauri command is push-only, so
+// `updateMatchReplaceRule` does `removeMatchReplaceRule(idx)`
+// + `addMatchReplaceRule(newRule)`. The local store is
+// updated optimistically.
 
 import { useEffect, useState } from "react";
 import { useProjectStore } from "../state/project";
@@ -36,11 +54,27 @@ import {
   removeMatchReplaceRule,
 } from "../api";
 import { matchReplaceApplyUrl } from "../lib/match_replace";
-import type { MatchReplaceRule } from "../types/domain";
+import type { MatchReplaceRule, MatchReplaceTarget } from "../types/domain";
+
+/**
+ * The editable targets in the v1 M&R editor. The Rust
+ * `MatchReplaceTarget` enum has 5 variants; the editor
+ * only exposes the 3 request_* targets (the response_*
+ * targets are reserved for v2 per the spec's "v2" note
+ * in `types/domain.ts`). The `case_insensitive` field is
+ * not exposed in the v1 editor either (it's a v2
+ * follow-up; the spec's `add()` defaults it to `false`).
+ */
+const EDITABLE_TARGETS: readonly MatchReplaceTarget[] = [
+  "request_url",
+  "request_header",
+  "request_body",
+];
 
 export function MatchReplaceEditor() {
   const rules = useUiStore((s) => s.matchReplaceRules);
   const setRules = useUiStore((s) => s.setMatchReplaceRules);
+  const updateRule = useUiStore((s) => s.updateMatchReplaceRule);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
 
   // Phase 7 C-B.2: "Test" button state. The sample URL
@@ -207,23 +241,103 @@ export function MatchReplaceEditor() {
                   data-testid={`match-replace-row-target-${i}`}
                   className="py-1 font-mono"
                 >
-                  {r.target}
+                  <select
+                    data-testid={`match-replace-row-target-input-${i}`}
+                    value={r.target}
+                    onChange={(e) => {
+                      if (!activeProjectId) return;
+                      void updateRule(activeProjectId, i, {
+                        target: e.target.value as MatchReplaceTarget,
+                      });
+                    }}
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200"
+                  >
+                    {EDITABLE_TARGETS.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
                 </td>
                 <td
                   data-testid={`match-replace-row-pattern-${i}`}
                   className="font-mono text-slate-300"
                 >
-                  {r.pattern || "(empty)"}
+                  <input
+                    data-testid={`match-replace-row-pattern-input-${i}`}
+                    type="text"
+                    value={r.pattern}
+                    onChange={(e) => {
+                      if (!activeProjectId) return;
+                      void updateRule(activeProjectId, i, {
+                        pattern: e.target.value,
+                      });
+                    }}
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200"
+                  />
                 </td>
                 <td
                   data-testid={`match-replace-row-replace-${i}`}
                   className="font-mono text-slate-300"
                 >
-                  {r.replace || "(empty)"}
+                  <input
+                    data-testid={`match-replace-row-replace-input-${i}`}
+                    type="text"
+                    value={r.replace}
+                    onChange={(e) => {
+                      if (!activeProjectId) return;
+                      void updateRule(activeProjectId, i, {
+                        replace: e.target.value,
+                      });
+                    }}
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200"
+                  />
                 </td>
-                <td>{r.is_regex ? "✓" : ""}</td>
-                <td>{r.priority}</td>
-                <td>{r.enabled ? "✓" : ""}</td>
+                <td>
+                  <input
+                    data-testid={`match-replace-row-is-regex-${i}`}
+                    type="checkbox"
+                    checked={r.is_regex}
+                    onChange={(e) => {
+                      if (!activeProjectId) return;
+                      void updateRule(activeProjectId, i, {
+                        is_regex: e.target.checked,
+                      });
+                    }}
+                    aria-label="Toggle is_regex"
+                  />
+                </td>
+                <td>
+                  <input
+                    data-testid={`match-replace-row-priority-${i}`}
+                    type="number"
+                    value={r.priority}
+                    onChange={(e) => {
+                      if (!activeProjectId) return;
+                      const v = Number(e.target.value);
+                      if (Number.isFinite(v)) {
+                        void updateRule(activeProjectId, i, {
+                          priority: v,
+                        });
+                      }
+                    }}
+                    className="w-16 rounded border border-slate-700 bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200"
+                  />
+                </td>
+                <td>
+                  <input
+                    data-testid={`match-replace-row-enabled-${i}`}
+                    type="checkbox"
+                    checked={r.enabled}
+                    onChange={(e) => {
+                      if (!activeProjectId) return;
+                      void updateRule(activeProjectId, i, {
+                        enabled: e.target.checked,
+                      });
+                    }}
+                    aria-label="Toggle enabled"
+                  />
+                </td>
                 <td>
                   <button
                     data-testid={`match-replace-row-remove-${i}`}

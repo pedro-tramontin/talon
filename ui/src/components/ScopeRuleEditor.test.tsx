@@ -235,4 +235,144 @@ describe("ScopeRuleEditor", () => {
     const btn = screen.getByTestId("scope-rule-editor-add") as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
   });
+
+  // Phase 7 C-B.4: SecLists bulk-import.
+  //
+  // The file picker is hidden; clicking the
+  // "Bulk import" button triggers `fileInputRef.click()`.
+  // We simulate the user picking a file by firing a
+  // `change` event on the input with a `File` payload.
+  // `FileReader.readAsText` is replaced by the browser
+  // `File.text()` Promise method (the editor uses the
+  // same; jsdom supports it).
+
+  it("renders the Bulk import button next to + Add", async () => {
+    listScopeRulesMock.mockResolvedValueOnce([]);
+    render(<ScopeRuleEditor />);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("scope-rule-editor-bulk-import"),
+      ).toBeDefined();
+    });
+  });
+
+  it("clicking Bulk import triggers a click on the hidden file input", async () => {
+    listScopeRulesMock.mockResolvedValueOnce([]);
+    render(<ScopeRuleEditor />);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("scope-rule-editor-bulk-import"),
+      ).toBeDefined();
+    });
+    const fileInput = screen.getByTestId(
+      "scope-rule-editor-bulk-import-file",
+    ) as HTMLInputElement;
+    const clickSpy = vi.spyOn(fileInput, "click");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("scope-rule-editor-bulk-import"));
+    });
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("uploading a valid file with 3 hosts calls addScopeRule 3 times and adds 3 rules to the store", async () => {
+    listScopeRulesMock.mockResolvedValueOnce([]);
+    addScopeRuleMock.mockResolvedValue(undefined);
+    render(<ScopeRuleEditor />);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("scope-rule-editor-bulk-import"),
+      ).toBeDefined();
+    });
+    const file = new File(
+      ["a.test\nb.test\nc.test\n"],
+      "hosts.txt",
+      { type: "text/plain" },
+    );
+    const fileInput = screen.getByTestId(
+      "scope-rule-editor-bulk-import-file",
+    ) as HTMLInputElement;
+    // `Object.defineProperty` is needed because `files` is
+    // a read-only `FileList` on a real `<input type="file">`.
+    Object.defineProperty(fileInput, "files", {
+      value: [file],
+      configurable: true,
+    });
+    await act(async () => {
+      fireEvent.change(fileInput);
+    });
+    await waitFor(() => {
+      expect(addScopeRuleMock).toHaveBeenCalledTimes(3);
+    });
+    const rules = uiStore.getState().scopeRules;
+    expect(rules).toHaveLength(3);
+    expect(rules[0].pattern).toBe("a.test");
+    expect(rules[1].pattern).toBe("b.test");
+    expect(rules[2].pattern).toBe("c.test");
+    expect(rules[0].label).toBe("imported");
+  });
+
+  it("uploading a file with 1 host + 2 comments calls addScopeRule 1 time", async () => {
+    listScopeRulesMock.mockResolvedValueOnce([]);
+    addScopeRuleMock.mockResolvedValue(undefined);
+    render(<ScopeRuleEditor />);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("scope-rule-editor-bulk-import"),
+      ).toBeDefined();
+    });
+    const file = new File(
+      ["# header\nonly.test\n# trailing\n"],
+      "hosts.txt",
+      { type: "text/plain" },
+    );
+    const fileInput = screen.getByTestId(
+      "scope-rule-editor-bulk-import-file",
+    ) as HTMLInputElement;
+    Object.defineProperty(fileInput, "files", {
+      value: [file],
+      configurable: true,
+    });
+    await act(async () => {
+      fireEvent.change(fileInput);
+    });
+    await waitFor(() => {
+      expect(addScopeRuleMock).toHaveBeenCalledTimes(1);
+    });
+    expect(uiStore.getState().scopeRules[0].pattern).toBe("only.test");
+  });
+
+  it("uploading a file with 0 hosts (comments only) shows the 'no hosts' hint and does not call addScopeRule", async () => {
+    listScopeRulesMock.mockResolvedValueOnce([]);
+    addScopeRuleMock.mockResolvedValue(undefined);
+    render(<ScopeRuleEditor />);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("scope-rule-editor-bulk-import"),
+      ).toBeDefined();
+    });
+    const file = new File(
+      ["# only comments\n# more comments\n"],
+      "hosts.txt",
+      { type: "text/plain" },
+    );
+    const fileInput = screen.getByTestId(
+      "scope-rule-editor-bulk-import-file",
+    ) as HTMLInputElement;
+    Object.defineProperty(fileInput, "files", {
+      value: [file],
+      configurable: true,
+    });
+    await act(async () => {
+      fireEvent.change(fileInput);
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("scope-rule-editor-bulk-import-error"),
+      ).toBeDefined();
+    });
+    expect(
+      screen.getByTestId("scope-rule-editor-bulk-import-error").textContent,
+    ).toContain("No hosts");
+    expect(addScopeRuleMock).not.toHaveBeenCalled();
+  });
 });

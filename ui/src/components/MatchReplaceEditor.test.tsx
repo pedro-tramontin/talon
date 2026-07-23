@@ -97,15 +97,20 @@ describe("MatchReplaceEditor", () => {
     await waitFor(() => {
       expect(screen.getByTestId("match-replace-row-0")).toBeDefined();
     });
-    expect(screen.getByTestId("match-replace-row-target-0").textContent).toBe(
-      "request_url",
-    );
-    expect(screen.getByTestId("match-replace-row-pattern-0").textContent).toBe(
-      "/api/v1/",
-    );
-    expect(screen.getByTestId("match-replace-row-replace-0").textContent).toBe(
-      "/api/v2/",
-    );
+    // The cells now contain inputs (Phase 7 C-B.3); assert
+    // on the input values, not the text content.
+    const targetSel = screen.getByTestId(
+      "match-replace-row-target-input-0",
+    ) as HTMLSelectElement;
+    expect(targetSel.value).toBe("request_url");
+    const patternInput = screen.getByTestId(
+      "match-replace-row-pattern-input-0",
+    ) as HTMLInputElement;
+    expect(patternInput.value).toBe("/api/v1/");
+    const replaceInput = screen.getByTestId(
+      "match-replace-row-replace-input-0",
+    ) as HTMLInputElement;
+    expect(replaceInput.value).toBe("/api/v2/");
   });
 
   it("clicking + Add rule calls addMatchReplaceRule and updates the store", async () => {
@@ -302,5 +307,188 @@ describe("MatchReplaceEditor", () => {
     ).toBe(true);
     // No result element rendered.
     expect(screen.queryByTestId("match-replace-editor-test-result")).toBeNull();
+  });
+
+  // Phase 7 C-B.3: per-cell edit affordances. Each
+  // cell-change is a remove + add round-trip via
+  // `updateMatchReplaceRule` (which is the same as
+  // the existing `removeMatchReplaceRule` +
+  // `addMatchReplaceRule` calls in sequence).
+
+  it("editing the pattern cell calls updateMatchReplaceRule with the new value", async () => {
+    const rules: MatchReplaceRule[] = [
+      {
+        target: "request_url",
+        case_insensitive: false,
+        is_regex: false,
+        pattern: "/old",
+        replace: "/new",
+        enabled: true,
+        priority: 0,
+      },
+    ];
+    listMock.mockResolvedValueOnce(rules);
+    addMock.mockResolvedValue(undefined);
+    removeMock.mockResolvedValue(undefined);
+    render(<MatchReplaceEditor />);
+    await waitFor(() => {
+      expect(screen.getByTestId("match-replace-row-0")).toBeDefined();
+    });
+    const patternInput = screen.getByTestId(
+      "match-replace-row-pattern-input-0",
+    ) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(patternInput, { target: { value: "/renamed" } });
+    });
+    // The round-trip: remove + add.
+    await waitFor(() => {
+      expect(removeMock).toHaveBeenCalledWith("proj-1", 0);
+    });
+    expect(addMock).toHaveBeenCalledWith(
+      "proj-1",
+      expect.objectContaining({ pattern: "/renamed" }),
+    );
+    // The store reflects the new value.
+    expect(uiStore.getState().matchReplaceRules[0].pattern).toBe(
+      "/renamed",
+    );
+  });
+
+  it("editing the is_regex checkbox toggles the flag", async () => {
+    const rules: MatchReplaceRule[] = [
+      {
+        target: "request_url",
+        case_insensitive: false,
+        is_regex: false,
+        pattern: "/x",
+        replace: "/y",
+        enabled: true,
+        priority: 0,
+      },
+    ];
+    listMock.mockResolvedValueOnce(rules);
+    addMock.mockResolvedValue(undefined);
+    removeMock.mockResolvedValue(undefined);
+    render(<MatchReplaceEditor />);
+    await waitFor(() => {
+      expect(screen.getByTestId("match-replace-row-0")).toBeDefined();
+    });
+    const isRegex = screen.getByTestId(
+      "match-replace-row-is-regex-0",
+    ) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.click(isRegex);
+    });
+    await waitFor(() => {
+      expect(addMock).toHaveBeenCalledWith(
+        "proj-1",
+        expect.objectContaining({ is_regex: true }),
+      );
+    });
+    expect(uiStore.getState().matchReplaceRules[0].is_regex).toBe(true);
+  });
+
+  it("editing the enabled checkbox toggles the flag", async () => {
+    const rules: MatchReplaceRule[] = [
+      {
+        target: "request_url",
+        case_insensitive: false,
+        is_regex: false,
+        pattern: "/x",
+        replace: "/y",
+        enabled: true,
+        priority: 0,
+      },
+    ];
+    listMock.mockResolvedValueOnce(rules);
+    addMock.mockResolvedValue(undefined);
+    removeMock.mockResolvedValue(undefined);
+    render(<MatchReplaceEditor />);
+    await waitFor(() => {
+      expect(screen.getByTestId("match-replace-row-0")).toBeDefined();
+    });
+    const enabled = screen.getByTestId(
+      "match-replace-row-enabled-0",
+    ) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.click(enabled);
+    });
+    await waitFor(() => {
+      expect(addMock).toHaveBeenCalledWith(
+        "proj-1",
+        expect.objectContaining({ enabled: false }),
+      );
+    });
+    expect(uiStore.getState().matchReplaceRules[0].enabled).toBe(false);
+  });
+
+  it("editing the priority cell accepts negative numbers", async () => {
+    const rules: MatchReplaceRule[] = [
+      {
+        target: "request_url",
+        case_insensitive: false,
+        is_regex: false,
+        pattern: "/x",
+        replace: "/y",
+        enabled: true,
+        priority: 0,
+      },
+    ];
+    listMock.mockResolvedValueOnce(rules);
+    addMock.mockResolvedValue(undefined);
+    removeMock.mockResolvedValue(undefined);
+    render(<MatchReplaceEditor />);
+    await waitFor(() => {
+      expect(screen.getByTestId("match-replace-row-0")).toBeDefined();
+    });
+    const priority = screen.getByTestId(
+      "match-replace-row-priority-0",
+    ) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(priority, { target: { value: "-1" } });
+    });
+    await waitFor(() => {
+      expect(addMock).toHaveBeenCalledWith(
+        "proj-1",
+        expect.objectContaining({ priority: -1 }),
+      );
+    });
+    expect(uiStore.getState().matchReplaceRules[0].priority).toBe(-1);
+  });
+
+  it("editing the target cell changes the dropdown selection", async () => {
+    const rules: MatchReplaceRule[] = [
+      {
+        target: "request_url",
+        case_insensitive: false,
+        is_regex: false,
+        pattern: "/x",
+        replace: "/y",
+        enabled: true,
+        priority: 0,
+      },
+    ];
+    listMock.mockResolvedValueOnce(rules);
+    addMock.mockResolvedValue(undefined);
+    removeMock.mockResolvedValue(undefined);
+    render(<MatchReplaceEditor />);
+    await waitFor(() => {
+      expect(screen.getByTestId("match-replace-row-0")).toBeDefined();
+    });
+    const target = screen.getByTestId(
+      "match-replace-row-target-input-0",
+    ) as HTMLSelectElement;
+    await act(async () => {
+      fireEvent.change(target, { target: { value: "request_body" } });
+    });
+    await waitFor(() => {
+      expect(addMock).toHaveBeenCalledWith(
+        "proj-1",
+        expect.objectContaining({ target: "request_body" }),
+      );
+    });
+    expect(uiStore.getState().matchReplaceRules[0].target).toBe(
+      "request_body",
+    );
   });
 });
