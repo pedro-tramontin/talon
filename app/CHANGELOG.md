@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.1](https://github.com/pedro-tramontin/talon/compare/v0.2.0...v0.2.1) (2026-07-23)
+
+
+### Features
+
+* **ui:** M&R row-edit + SecLists bulk-import + JSON/form-data views + fork from history ([#75](https://github.com/pedro-tramontin/talon/pull/75)) ([e90de12](https://github.com/pedro-tramontin/talon/commit/e90de12))
+* **ui:** persist replay history (UI side) + add M&R "Test" button ([#74](https://github.com/pedro-tramontin/talon/pull/74)) ([5a81922](https://github.com/pedro-tramontin/talon/commit/5a81922))
+* **ui:** §7b v0.5+ — wire active-project rules into start_proxy, persist ProjectSettings + replay history (Rust side + replay history UI) ([#73](https://github.com/pedro-tramontin/talon/pull/73)) ([8f32e25](https://github.com/pedro-tramontin/talon/commit/8f32e25))
+
+
 ## [0.2.0](https://github.com/pedro-tramontin/talon/compare/v0.1.3...v0.2.0) (2026-07-22)
 
 
