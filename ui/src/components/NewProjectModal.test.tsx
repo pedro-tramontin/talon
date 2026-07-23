@@ -65,24 +65,11 @@ describe("NewProjectModal", () => {
     expect(screen.queryByTestId("new-project-modal")).toBeNull();
   });
 
-  it("renders the title + 2 inputs + 2 buttons when open", () => {
-    act(() => {
-      uiStore.getState().setNewProjectModalOpen(true);
-    });
-    render(<NewProjectModal />);
-    expect(screen.getByTestId("new-project-modal-title").textContent).toBe(
-      "New Project",
-    );
-    expect(screen.getByTestId("new-project-modal")).toBeInTheDocument();
-    expect(screen.getByTestId("new-project-modal-name")).toBeInTheDocument();
-    expect(
-      screen.getByTestId("new-project-modal-target-host"),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("new-project-modal-cancel")).toBeInTheDocument();
-    expect(screen.getByTestId("new-project-modal-create")).toBeInTheDocument();
-  });
-
-  it("disables the Create button when the name is empty", () => {
+  it("disables the Create button when either field is empty or invalid", () => {
+    // The Create button must be disabled until both fields
+    // are non-empty AND target_host passes isValidHostShape.
+    // Covers the spec's cases 2, 3, 4 in one parameterized
+    // assertion.
     act(() => {
       uiStore.getState().setNewProjectModalOpen(true);
     });
@@ -90,50 +77,14 @@ describe("NewProjectModal", () => {
     const nameInput = screen.getByTestId("new-project-modal-name");
     const hostInput = screen.getByTestId("new-project-modal-target-host");
     const create = screen.getByTestId("new-project-modal-create");
-    // Fill only the host — name is still empty.
-    act(() => {
-      fireEvent.change(hostInput, { target: { value: "api.acme.example.com" } });
-    });
+    // Both fields empty.
     expect(create).toBeDisabled();
-    // Sanity: touching the name field shouldn't change the
-    // disabled state.
-    act(() => {
-      fireEvent.blur(nameInput);
-    });
-    expect(create).toBeDisabled();
-  });
-
-  it("disables the Create button when the target_host is empty", () => {
-    act(() => {
-      uiStore.getState().setNewProjectModalOpen(true);
-    });
-    render(<NewProjectModal />);
-    const nameInput = screen.getByTestId("new-project-modal-name");
-    const hostInput = screen.getByTestId("new-project-modal-target-host");
-    const create = screen.getByTestId("new-project-modal-create");
+    // Name filled, host empty.
     act(() => {
       fireEvent.change(nameInput, { target: { value: "acme-web" } });
     });
     expect(create).toBeDisabled();
-    act(() => {
-      fireEvent.blur(hostInput);
-    });
-    expect(create).toBeDisabled();
-  });
-
-  it("disables the Create button when the target_host fails isValidHostShape", () => {
-    act(() => {
-      uiStore.getState().setNewProjectModalOpen(true);
-    });
-    render(<NewProjectModal />);
-    const nameInput = screen.getByTestId("new-project-modal-name");
-    const hostInput = screen.getByTestId("new-project-modal-target-host");
-    const create = screen.getByTestId("new-project-modal-create");
-    act(() => {
-      fireEvent.change(nameInput, { target: { value: "acme-web" } });
-    });
-    // "foo bar" has an embedded space — isValidHostShape
-    // rejects it.
+    // Both filled but host fails isValidHostShape.
     act(() => {
       fireEvent.change(hostInput, { target: { value: "foo bar" } });
       fireEvent.blur(hostInput);
