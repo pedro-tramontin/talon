@@ -162,6 +162,18 @@ export type UiStore = {
 
   /** Open / close the Settings modal. */
   setSettingsOpen: (open: boolean) => void;
+
+  /**
+   * Whether the New Project modal is open. Flipped by the
+   * "+" button next to the project dropdown in the Capture
+   * top bar. Phase 8 (2026-07-23) — the modal hosts the
+   * `openProject` + `addProject` + `setActiveProject`
+   * sequence that wires the Tauri command to the UI.
+   */
+  newProjectModalOpen: boolean;
+
+  /** Open / close the New Project modal. */
+  setNewProjectModalOpen: (open: boolean) => void;
 };
 
 function createUiStore() {
@@ -234,6 +246,12 @@ function createUiStore() {
 
     setSettingsOpen(open) {
       set({ settingsOpen: open });
+    },
+
+    newProjectModalOpen: false,
+
+    setNewProjectModalOpen(open) {
+      set({ newProjectModalOpen: open });
     },
   }));
 }

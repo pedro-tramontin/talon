@@ -6,10 +6,11 @@
 // right-rail tabs. We assert the column widths and the
 // placeholder empty states here.
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { Capture, LEFT_RAIL_PX, RIGHT_RAIL_PX } from "./Capture";
 import { projectStore } from "../state/project";
+import { uiStore } from "../state/ui";
 import { asProjectId } from "../types/ids";
 import type { ProjectMeta } from "../types/domain";
 
@@ -26,8 +27,16 @@ function resetProjectStore() {
   projectStore.setState({ projects: [], activeProjectId: null });
 }
 
+function resetUiStore() {
+  uiStore.setState({
+    newProjectModalOpen: false,
+    settingsOpen: false,
+  });
+}
+
 beforeEach(() => {
   resetProjectStore();
+  resetUiStore();
 });
 
 describe("Capture route", () => {
@@ -129,5 +138,24 @@ describe("Capture route", () => {
       "capture-project-select",
     ) as HTMLSelectElement;
     expect(select.value).toBe(a.id);
+  });
+
+  // Phase 8 (2026-07-23) — the New Project feature gap.
+  // The "+" button next to the dropdown opens the modal
+  // (the newProjectModalOpen UI store flag flips to true);
+  // the Settings button still works (regression — the
+  // adjacent button is unchanged).
+  it("the '+ New' button opens the New Project modal", () => {
+    render(<Capture />);
+    expect(uiStore.getState().newProjectModalOpen).toBe(false);
+    fireEvent.click(screen.getByTestId("capture-new-project-button"));
+    expect(uiStore.getState().newProjectModalOpen).toBe(true);
+  });
+
+  it("the Settings button still opens the Settings modal (Phase 6 §6.7 regression)", () => {
+    render(<Capture />);
+    expect(uiStore.getState().settingsOpen).toBe(false);
+    fireEvent.click(screen.getByTestId("capture-settings-button"));
+    expect(uiStore.getState().settingsOpen).toBe(true);
   });
 });

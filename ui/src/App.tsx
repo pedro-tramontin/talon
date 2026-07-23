@@ -3,6 +3,7 @@ import { greet, type Greeting } from "./api";
 import { AgentPanel } from "./components/AgentPanel";
 import { Capture } from "./routes/Capture";
 import { SettingsModal } from "./components/SettingsModal";
+import { NewProjectModal } from "./components/NewProjectModal";
 import {
   agentStore,
   CONFIRM_TIMEOUT_SECS,
@@ -290,6 +291,13 @@ export function App() {
        * `settingsOpen` is false; mounting it here just gives the
        * store-driven open/close a stable DOM presence. */}
       <SettingsModal />
+
+      {/* Phase 8 (2026-07-23): the New Project modal hosts the
+       * `openProject` Tauri command + `projectStore.addProject`
+       * + `setActiveProject` sequence that lets the user
+       * create a new project from the Capture top bar's "+"
+       * button. */}
+      <NewProjectModal />
     </div>
   );
 }
