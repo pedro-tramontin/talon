@@ -1,10 +1,10 @@
 # Developer guide
 
-This is the hands-on guide for working on Talon — building, running, testing, and debugging. For the high-level design, see [`docs/architecture.md`](docs/architecture.md). For how to contribute, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+This is the hands-on guide for working on Talon — building, running, testing, and debugging. For the high-level design, see [`architecture.md`](architecture.md). For how to contribute, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ## Prerequisites
 
-The full per-OS list is in [`docs/requirements.md`](docs/requirements.md). The short version:
+The full per-OS list is in [`requirements.md`](requirements.md). The short version:
 
 - **Rust ≥ 1.78** (`rustup update stable`)
 - **Node ≥ 22.13** and **pnpm ≥ 11** (the `package.json` `packageManager` field pins the exact pnpm version)
