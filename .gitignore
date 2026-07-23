@@ -28,3 +28,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Internal agent scratch / plan files (do not commit)
+.hermes/

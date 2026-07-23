@@ -61,10 +61,26 @@ export type WireHandler = (payload: unknown, ev: WireEvent) => void;
 export interface WireClientOptions {
   /** Browser-mode WS URL (Phase 8). Ignored in Tauri mode. */
   readonly wsUrl?: string;
-  /** Initial backoff in ms (browser mode only). */
+  /**
+   * Initial backoff in ms (browser mode only).
+   */
   readonly initialBackoffMs?: number;
-  /** Max backoff in ms (browser mode only). */
+  /**
+   * Max backoff in ms (browser mode only).
+   */
   readonly maxBackoffMs?: number;
+  /**
+   * Optional auth token for the WS upgrade (Phase 8
+   * remote mode). When set, the client sends the
+   * `Sec-WebSocket-Protocol: talon-auth.<token>`
+   * subprotocol on the upgrade request (browsers forbid
+   * the `Authorization` header on WS upgrades). The
+   * server's WS handler reads the subprotocol and
+   * verifies the token with `subtle::ConstantTimeEq`.
+   * Ignored in Tauri mode (the Tauri shell uses an
+   * in-process channel that doesn't need a subprotocol).
+   */
+  readonly authToken?: string;
 }
 
 /** Returns true if the page is running inside a Tauri webview. */
@@ -81,7 +97,7 @@ function isTauri(): boolean {
  */
 export class WireClient {
   private readonly handlers = new Map<WireEventKind, Set<WireHandler>>();
-  private readonly opts: Required<WireClientOptions>;
+  private readonly opts: WireClientOptions;
   private unlisten: UnlistenFn | null = null;
   private ws: WebSocket | null = null;
   private reconnectAttempt = 0;
@@ -92,6 +108,7 @@ export class WireClient {
   constructor(opts: WireClientOptions = {}) {
     this.opts = {
       wsUrl: opts.wsUrl ?? this.defaultWsUrl(),
+      authToken: opts.authToken,
       initialBackoffMs: opts.initialBackoffMs ?? 250,
       maxBackoffMs: opts.maxBackoffMs ?? 30_000,
     };
@@ -221,7 +238,22 @@ export class WireClient {
 
   private openWs(): void {
     if (this.closed) return;
-    const ws = new WebSocket(this.opts.wsUrl);
+    // The `wsUrl` is always non-null after the
+    // constructor default; assert with a fallback.
+    const wsUrl = this.opts.wsUrl ?? this.defaultWsUrl();
+    // Build the constructor arg list. The 2nd arg of
+    // `WebSocket` is the optional `subprotocols` list;
+    // browsers send these as the
+    // `Sec-WebSocket-Protocol` request header. When the
+    // auth token is set, we pass `["talon-auth.<token>"]`
+    // (the server-side handler reads this subprotocol
+    // and verifies the token).
+    const protocols: string[] | undefined = this.opts.authToken
+      ? [`talon-auth.${this.opts.authToken}`]
+      : undefined;
+    const ws = protocols
+      ? new WebSocket(wsUrl, protocols)
+      : new WebSocket(wsUrl);
     this.ws = ws;
     ws.addEventListener("message", (msg) => {
       try {
@@ -236,11 +268,14 @@ export class WireClient {
       if (this.closed) return;
       // Exponential backoff with cap. Reset the seq on a full
       // disconnect (Phase 8 server restart) so the gap counter
-      // is fresh.
+      // is fresh. The `initialBackoffMs` / `maxBackoffMs`
+      // defaults are filled in by the constructor.
       this.reconnectAttempt += 1;
+      const initial = this.opts.initialBackoffMs ?? 250;
+      const max = this.opts.maxBackoffMs ?? 30_000;
       const backoff = Math.min(
-        this.opts.initialBackoffMs * 2 ** (this.reconnectAttempt - 1),
-        this.opts.maxBackoffMs,
+        initial * 2 ** (this.reconnectAttempt - 1),
+        max,
       );
       this.resetSeq();
       setTimeout(() => this.openWs(), backoff);

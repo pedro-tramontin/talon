@@ -33,6 +33,81 @@
 - **Internal LLM agent** — OpenAI-compatible client (LM Studio / Ollama / OpenAI / any `/v1/chat/completions` endpoint), Cmd-K palette, allow-list of tools per run, per-tool confirm dialogs for destructive actions, `type DELETE` double-confirm for `talon_delete_exchange`.
 - **MCP server** — 20 tools over stdio, drives Talon from external LLMs (Claude Desktop, etc.) with the same engine the UI uses. Ships as `bk-mcp` crate in the workspace.
 - **Supply-chain hardening** — strict CSP locked to bundled assets, `cargo-deny` blocking check, `pnpm audit` at moderate severity, threat-model ADR, threat-model binary scan guarding the build-time-only `dom_query` and `quick-xml` crates.
+- **Browser-access mode** — headless HTTP + WebSocket server that mirrors the Tauri command surface, so you can drive Talon from any browser on the LAN. Loopback by default (`127.0.0.1:7331`, no auth); opt in to remote with `--allow-remote` (requires TLS + an auto-generated auth token) and announce via mDNS with `--mdns-announce`. Same project DB, same SQLite, same WebSocket event stream. The project switcher adds a `New...` entry to the dropdown that opens the existing new-project modal.
+
+## Browser-access mode
+
+Talon can run as a headless HTTP + WebSocket server (`bk-server` crate) and be driven from any modern browser. The same SQLite project, the same proxy engine, the same WebSocket event stream — just no Tauri window.
+
+### Loopback (the default)
+
+```bash
+talon --browser
+# → HTTP on 127.0.0.1:7331, no auth, no TLS.
+open http://localhost:7331
+```
+
+Useful when you want the UI in a tab but the engine headless (e.g. on a server with no display).
+
+### Remote (LAN / VPN)
+
+```bash
+talon --browser \
+      --allow-remote \
+      --tls-cert /etc/talon/cert.pem \
+      --tls-key  /etc/talon/key.pem
+# → HTTPS on 0.0.0.0:7331, auth required, mDNS auto-announced.
+```
+
+`--allow-remote` is a single opt-in that enforces three invariants together:
+
+1. **Bind lifts from `127.0.0.1` to `0.0.0.0`** (or whatever `--bind` is set to). The server refuses to bind a non-loopback address without it.
+2. **TLS is required.** `--tls-cert` and `--tls-key` are mandatory; the server fails fast if either is missing or unreadable. Self-signed certs are fine for LAN use; use a real cert (e.g. `mkcert` or your internal CA) for anything that traverses a network you don't fully control.
+3. **Auth is required.** On first launch the server generates a 32-byte token (64 hex chars) and writes it to `--auth-token-path` (default `~/.config/talon/auth-token`). Every HTTP request must carry `Authorization: Bearer <token>`. The WebSocket upgrade negotiates the token via the `Sec-WebSocket-Protocol: talon-auth.<token>` subprotocol (browsers strip `Authorization` from WS upgrades, so this is the cross-language convention).
+
+Print the current token (e.g. to paste into a browser's auth header or a curl command):
+
+```bash
+talon token
+# 4f3a9c… (64 hex chars)
+```
+
+Pass the token on the wire:
+
+```bash
+# HTTP
+curl -H "Authorization: Bearer $(talon token)" https://talon.lan:7331/api/health
+# → {"ok":true}
+
+# WebSocket (browser)
+# The UI reads ?token=<token> from the URL and negotiates the
+# talon-auth.<token> subprotocol automatically.
+open "https://talon.lan:7331/?token=$(talon token)"
+```
+
+When `--allow-remote` is on, the server also auto-enables mDNS announcement on `_talon._tcp.local.` so other machines on the LAN can discover it via:
+
+```bash
+dns-sd -B _talon._tcp local.   # macOS
+avahi-browse -art _talon._tcp  # Linux
+```
+
+The browser UI picks up the `?token=` query parameter and connects the `WireClient` to the same WebSocket hub the desktop app uses — the experience is otherwise identical to the Tauri window.
+
+### All `--browser` flags
+
+| Flag                   | Default                  | Meaning                                                                 |
+| ---------------------- | ------------------------ | ----------------------------------------------------------------------- |
+| `--browser`            | (off)                    | Run as a headless HTTP+WS server instead of the Tauri window.           |
+| `--port`               | `7331`                   | TCP port to listen on.                                                  |
+| `--bind`               | `127.0.0.1`              | Bind address. Refused unless loopback or `--allow-remote` is set.        |
+| `--allow-remote`       | (off)                    | Opt in to LAN/WAN access. Requires `--tls-cert` + `--tls-key` + token.  |
+| `--tls-cert`           | (none)                   | Path to PEM-encoded TLS certificate. Required for `--allow-remote`.     |
+| `--tls-key`            | (none)                   | Path to PEM-encoded TLS private key. Required for `--allow-remote`.     |
+| `--auth-token-path`    | `~/.config/talon/auth-token` | Where the auto-generated 64-hex-char token is stored.                |
+| `--mdns-announce`      | (auto when remote)       | Announce the server on `_talon._tcp.local.` via mDNS.                    |
+| `--project`            | (most-recent)            | Path to a project DB file (overrides the most-recently-used).           |
+| `talon token`          | —                        | Print the auth token to stdout.                                         |
 
 ## Quick start
 
@@ -105,6 +180,7 @@ make ci
 
 - A strict CSP that locks the webview to bundled assets only (`default-src 'self'`, plus explicit `base-uri 'none'`, `form-action 'none'`, `object-src 'none'`, `frame-ancestors 'none'`).
 - The webview is created with `WebviewUrl::App(...)` (the Tauri 2 default for `tauri.conf.json`'s `build.frontendDist`), which means the only valid URL is the local file path to `index.html` in the bundled dist. No remote URL loading is possible without a code change.
+- **Browser-access mode** is locked down by default: it binds to `127.0.0.1` only, requires no auth, and refuses non-loopback binds unless `--allow-remote` is set. `--allow-remote` is a single switch that *atomically* lifts three locks together — non-loopback bind, mandatory TLS cert+key, and mandatory `Authorization: Bearer <token>` on every HTTP request — so a remote-exposed server can never run with a missing piece of the trio. WebSocket auth uses the `Sec-WebSocket-Protocol: talon-auth.<token>` subprotocol because browsers strip the `Authorization` header on WS upgrades. Token comparison is constant-time (`subtle::ConstantTimeEq`); file permissions on the token file are set to `0600` on Unix. mDNS announcements are opt-in (auto-enabled with `--allow-remote`) and can be turned off explicitly with no remote access via `--mdns-announce` alone remaining inert without `--allow-remote`.
 
 **Supply-chain enforcement** (every PR, blocking):
 

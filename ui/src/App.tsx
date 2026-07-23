@@ -9,7 +9,7 @@ import {
   CONFIRM_TIMEOUT_SECS,
   useAgentStore,
 } from "./state/agent";
-import { getWireClient } from "./lib/ws";
+import { getWireClient, setWireClient, WireClient } from "./lib/ws";
 import { wsStore } from "./state/ws";
 import type { AgentConfig } from "./types/agent";
 
@@ -87,7 +87,24 @@ export function App() {
   // Wire-bus lifecycle: open on mount, close on unmount.
   // The transport is a singleton (see `getWireClient`) so
   // multiple component trees in dev-mode won't double-listen.
+  //
+  // Phase 8: in browser mode, the auth token is read from
+  // the `?token=<token>` query param (set by the user
+  // when they navigate to the server). The token is
+  // passed to the `WireClient` so it can send the
+  // `Sec-WebSocket-Protocol: talon-auth.<token>`
+  // subprotocol on the WS upgrade. Without the token,
+  // remote-mode servers (--allow-remote) return 401 on
+  // the WS upgrade.
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token") ?? undefined;
+    if (token) {
+      // Replace the singleton with one that has the
+      // auth token. This must happen BEFORE
+      // `getWireClient().connect()` is called.
+      setWireClient(new WireClient({ authToken: token }));
+    }
     const client = getWireClient();
     wsStore.getState().setConnectionState("reconnecting");
     client

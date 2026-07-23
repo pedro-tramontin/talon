@@ -120,10 +120,14 @@ describe("Capture route", () => {
       "capture-project-select",
     ) as HTMLSelectElement;
     const optionLabels = Array.from(select.options).map((o) => o.textContent);
+    // Phase 8 (full v1): a "New..." sentinel item is
+    // appended after the project list. This is the
+    // §8.4 spec's "switch project" UI affordance.
     expect(optionLabels).toEqual([
       "— None —",
       "alpha",
       "beta",
+      "New...",
     ]);
   });
 
@@ -137,6 +141,45 @@ describe("Capture route", () => {
     const select = screen.getByTestId(
       "capture-project-select",
     ) as HTMLSelectElement;
+    expect(select.value).toBe(a.id);
+  });
+
+  // Phase 8 (full v1) — the "New..." dropdown item
+  // opens the NewProjectModal (mirrors the "+ New"
+  // button's behavior, but inside the dropdown so
+  // the affordance is discoverable from the same
+  // surface as the project list).
+  it("the 'New...' dropdown item opens the NewProjectModal", () => {
+    render(<Capture />);
+    expect(uiStore.getState().newProjectModalOpen).toBe(false);
+    const select = screen.getByTestId(
+      "capture-project-select",
+    ) as HTMLSelectElement;
+    // The New... option's value is the sentinel
+    // "__new__" (defined inside the component).
+    fireEvent.change(select, { target: { value: "__new__" } });
+    expect(uiStore.getState().newProjectModalOpen).toBe(true);
+  });
+
+  // Phase 8 (full v1) — the dropdown returns to the
+  // previously-selected project after the New...
+  // sentinel is chosen (so cancelling the modal
+  // doesn't leave the dropdown in a "broken" state).
+  it("the dropdown returns to the previously-selected project after choosing 'New...'", () => {
+    const a = makeProject("alpha");
+    projectStore.setState({
+      projects: [a],
+      activeProjectId: a.id,
+    });
+    render(<Capture />);
+    const select = screen.getByTestId(
+      "capture-project-select",
+    ) as HTMLSelectElement;
+    expect(select.value).toBe(a.id);
+    fireEvent.change(select, { target: { value: "__new__" } });
+    // After choosing New..., the dropdown should snap
+    // back to the previously-selected project (the
+    // modal opens separately).
     expect(select.value).toBe(a.id);
   });
 

@@ -153,4 +153,65 @@ describe("WireClient (browser mode)", () => {
     expect(listen).not.toHaveBeenCalled();
     await client.disconnect();
   });
+
+  // Phase 8 (full v1) — when the auth token is set,
+  // the WireClient passes
+  // `talon-auth.<token>` as the WebSocket
+  // subprotocols list on the WS upgrade. The
+  // server's WS handler reads this subprotocol
+  // and verifies the token with
+  // `subtle::ConstantTimeEq` (browsers forbid the
+  // `Authorization` header on WS upgrade requests,
+  // so the subprotocol is the standard handoff).
+  it("sends 'talon-auth.<token>' subprotocol when authToken is set", () => {
+    // Spy on the global WebSocket constructor so we
+    // can capture the protocols arg without making a
+    // real connection (jsdom's WebSocket is partial).
+    const realWS = globalThis.WebSocket;
+    const wsSpy = vi.fn().mockImplementation(function () {
+      // The mock just records the args; no real
+      // network is attempted.
+    });
+    class MockWS {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        wsSpy(url, protocols);
+      }
+    }
+    // @ts-expect-error -- mocking the global
+    globalThis.WebSocket = MockWS;
+
+    try {
+      const token = "abc123def456";
+      // Use a non-Tauri mode (the `beforeEach`
+      // already cleared the Tauri internals).
+      const client = new WireClient({
+        wsUrl: "ws://localhost:8080/ws",
+        authToken: token,
+      });
+      // Connect: this triggers the WebSocket
+      // constructor with the subprotocol.
+      try {
+        // jsdom will throw on the missing addEventListener
+        // but that's fine; the constructor was already
+        // called before the throw.
+        // We access the internal `openWs` via a hack:
+        // `connect()` is async and the WebSocket
+        // constructor runs synchronously inside
+        // `openWs`. The `addEventListener` calls fail
+        // on the mock.
+        // @ts-expect-error -- accessing private method for the test
+        void client.openWs();
+      } catch {
+        // expected
+      }
+      // Assert: the WebSocket constructor was
+      // called with the URL and the
+      // `talon-auth.<token>` subprotocols list.
+      expect(wsSpy).toHaveBeenCalled();
+      const [, protocols] = wsSpy.mock.calls[0];
+      expect(protocols).toEqual([`talon-auth.${token}`]);
+    } finally {
+      globalThis.WebSocket = realWS;
+    }
+  });
 });

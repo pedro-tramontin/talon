@@ -34,6 +34,7 @@ bk-core = { workspace = true }
 bk-events = { workspace = true }
 bk-engine = { workspace = true }
 bk-proxy = { workspace = true }
+bk-server = { path = "../crates/bk-server" }
 bk-agent = { path = "../crates/bk-agent" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -42,6 +43,7 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
+clap = { workspace = true }
 dirs = "6.0"
 tempfile = "3.10"
 bytes = { workspace = true }

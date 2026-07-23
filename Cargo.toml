@@ -14,6 +14,7 @@ members = [
     "crates/bk-mcp",
     "crates/bk-agent",
     "crates/bk-events",
+    "crates/bk-server",
     "app",
 ]
 
@@ -63,6 +64,18 @@ tauri-build = { version = "2.0", features = [] }
 # Misc
 uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+
+# HTTP server (Phase 8 — bk-server)
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs", "trace", "cors"] }
+
+# mDNS (Phase 8 — bk-server remote mode announcement)
+mdns-sd = "0.11"
+
+# Constant-time token comparison + HMAC (Phase 8 — auth)
+subtle = "2.6"
 
 # HTTP model
 http = "1.1"
