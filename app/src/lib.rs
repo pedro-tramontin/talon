@@ -22,8 +22,8 @@
 //! (See `bin/desktop.rs` for the full rationale.)
 
 mod agent;
-mod commands;
-mod proxy_handle;
+pub mod commands;
+pub mod proxy_handle;
 mod wire;
 mod wire_bus;
 
@@ -64,7 +64,7 @@ fn greet(app: tauri::AppHandle) -> Greeting {
 /// Resolves the Talon config directory. Falls back to the
 /// system temp dir on platforms where the standard config dir
 /// is unavailable.
-fn default_config_dir() -> PathBuf {
+pub fn default_config_dir() -> PathBuf {
     system_config_dir()
         .or_else(system_data_dir)
         .unwrap_or_else(|| std::env::temp_dir().join("talon"))

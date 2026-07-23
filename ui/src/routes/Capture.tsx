@@ -129,6 +129,13 @@ function ProjectDropdown() {
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
   const setNewProjectModalOpen = useUiStore((s) => s.setNewProjectModalOpen);
 
+  // Sentinel value for the "New..." item at the bottom
+  // of the dropdown. When the user picks it, we open
+  // the NewProjectModal + reset the dropdown to the
+  // previously-selected project (so cancelling the
+  // modal returns to the same selection).
+  const NEW_SENTINEL = "__new__";
+
   return (
     <div className="flex items-center gap-2">
       <label
@@ -143,6 +150,17 @@ function ProjectDropdown() {
         value={activeProjectId ?? ""}
         onChange={(e) => {
           const v = e.target.value;
+          if (v === NEW_SENTINEL) {
+            // Open the NewProjectModal + reset the
+            // dropdown so the user sees the
+            // previously-selected project when the
+            // modal closes (regardless of whether
+            // they created a new project or
+            // cancelled).
+            setNewProjectModalOpen(true);
+            setActiveProject(activeProjectId);
+            return;
+          }
           setActiveProject(v === "" ? null : (v as typeof activeProjectId));
         }}
         className="rounded border border-slate-700 bg-bg-base px-2 py-1 text-sm text-slate-100 focus:border-accent focus:outline-none"
@@ -153,6 +171,10 @@ function ProjectDropdown() {
             {p.name}
           </option>
         ))}
+        {/* Phase 8 (full v1, per user directive): a
+         * "New..." sentinel item at the bottom of the
+         * dropdown opens the NewProjectModal. */}
+        <option value={NEW_SENTINEL}>New...</option>
       </select>
       {/* Phase 8 (2026-07-23): the "+" button opens the New
        * Project modal that wires `openProject` (Tauri
