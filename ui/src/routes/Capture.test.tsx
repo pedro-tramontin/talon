@@ -144,17 +144,15 @@ describe("Capture route", () => {
   // The "+" button next to the dropdown opens the modal
   // (the newProjectModalOpen UI store flag flips to true);
   // the Settings button still works (regression — the
-  // adjacent button is unchanged).
-  it("the '+ New' button opens the New Project modal", () => {
+  // adjacent button is unchanged). Per the per-item
+  // `objective:` block (case 10), this is one combined
+  // case: both buttons drive their respective modal flags.
+  it("the '+ New' button opens the New Project modal, and the Settings button still works", () => {
     render(<Capture />);
     expect(uiStore.getState().newProjectModalOpen).toBe(false);
+    expect(uiStore.getState().settingsOpen).toBe(false);
     fireEvent.click(screen.getByTestId("capture-new-project-button"));
     expect(uiStore.getState().newProjectModalOpen).toBe(true);
-  });
-
-  it("the Settings button still opens the Settings modal (Phase 6 §6.7 regression)", () => {
-    render(<Capture />);
-    expect(uiStore.getState().settingsOpen).toBe(false);
     fireEvent.click(screen.getByTestId("capture-settings-button"));
     expect(uiStore.getState().settingsOpen).toBe(true);
   });
