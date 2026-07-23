@@ -127,6 +127,7 @@ function ProjectDropdown() {
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const setActiveProject = useProjectStore((s) => s.setActiveProject);
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
+  const setNewProjectModalOpen = useUiStore((s) => s.setNewProjectModalOpen);
 
   return (
     <div className="flex items-center gap-2">
@@ -153,6 +154,20 @@ function ProjectDropdown() {
           </option>
         ))}
       </select>
+      {/* Phase 8 (2026-07-23): the "+" button opens the New
+       * Project modal that wires `openProject` (Tauri
+       * command at `app/src/commands/core.rs:144`) to
+       * `projectStore.addProject` (Zustand action). The
+       * button's style matches the adjacent Settings
+       * button: rounded border, hover state, small text. */}
+      <button
+        data-testid="capture-new-project-button"
+        onClick={() => setNewProjectModalOpen(true)}
+        className="rounded border border-slate-700 bg-transparent px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-accent"
+        aria-label="New project"
+      >
+        + New
+      </button>
       {/* Phase 6 §6.7: the Settings button opens the modal that
        * hosts the M&R editor. Lives in the top bar per the
        * spec's "Add a Settings button to the TopBar" line. */}
