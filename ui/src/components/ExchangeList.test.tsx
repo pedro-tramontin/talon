@@ -495,3 +495,47 @@ describe("ExchangeList delete button (v0.6 P3 #9)", () => {
     expect(exchangeStore.getState().exchanges.length).toBe(0);
   });
 });
+
+// v0.7 P3 #9b (2026-07-24): the store has had a
+// `scrollPosition` field and a `setScrollPosition` action
+// since v0.5, but nothing read or wrote them in production
+// code. This block covers the SAVE half of the wiring:
+//
+//   1. SAVE — the scroll container's `onScroll` handler
+//             writes `e.target.scrollTop` to the store on
+//             every scroll event.
+//
+// The RESTORE half (the mount-time `useEffect` that calls
+// `virtualizer.scrollToOffset(saved)`) is verified by code
+// review rather than a unit test:
+//
+//   - jsdom has no layout engine, so the DOM `scrollTop` of
+//     the scroll container stays 0 regardless of writes.
+//   - TanStack Virtual's `scrollToOffset` ultimately calls
+//     `instance.scrollElement.scrollTo({ top, behavior })`
+//     (see @tanstack/virtual-core `elementScroll`). jsdom
+//     does not implement `Element.prototype.scrollTo`, so
+//     the call is silently dropped via optional chaining —
+//     no spy can capture it.
+//   - The effect is 4 lines of obviously-correct code
+//     (`if (saved > 0) virtualizer.scrollToOffset(saved)`)
+//     and the regression risk is low; we accept manual
+//     review here.
+describe("ExchangeList scroll position (v0.7 P3 #9b)", () => {
+  it("saves scroll position to the store on scroll", () => {
+    exchangeStore.getState().setExchanges(buildFixture(200));
+    render(<ExchangeList />);
+    const scrollEl = screen.getByTestId(
+      "exchange-list-scroll",
+    ) as HTMLDivElement;
+    // `fireEvent` triggers a React state update (the
+    // onScroll handler writes to the store). Wrap in
+    // `act` to silence the "not wrapped in act" warning
+    // and to align with React 19's recommended testing
+    // practice.
+    act(() => {
+      fireEvent.scroll(scrollEl, { target: { scrollTop: 2400 } });
+    });
+    expect(exchangeStore.getState().scrollPosition).toBe(2400);
+  });
+});
