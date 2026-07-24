@@ -233,6 +233,7 @@ describe("ReplayView", () => {
           history: [],
           sending: false,
           projectId: null,
+          bodyTruncated: false,
         },
       ],
       activeTabId: s.tabs[0]?.id ?? null,
