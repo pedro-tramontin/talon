@@ -272,6 +272,12 @@ pub async fn send_replay(
     } else {
         String::new()
     };
+    // v0.6 P2 #6: extract the denormalized fields
+    // from the local `request` and the replay
+    // response (always present here, since the
+    // replay send always produced one).
+    let denorm_method = request.method.as_str().to_owned();
+    let denorm_status = response.bk_response.status;
     let exchange = HttpExchange {
         meta: ExchangeMeta {
             id: ExchangeId::new(),
@@ -282,6 +288,9 @@ pub async fn send_replay(
             scope_state: bk_core::ScopeState::Unscoped,
             notes,
             starred: false,
+            method: denorm_method,
+            status: denorm_status,
+            tags: Vec::new(),
         },
         request,
         response: Some(response.bk_response),
@@ -498,6 +507,10 @@ mod tests {
                 scope_state: bk_core::ScopeState::Unscoped,
                 notes: String::new(),
                 starred: false,
+                // v0.6 P2 #6: defaults for the new fields.
+                method: "GET".to_string(),
+                status: 200,
+                tags: Vec::new(),
             },
             request: request.clone(),
             response: Some(response),
@@ -531,6 +544,10 @@ mod tests {
                 scope_state: bk_core::ScopeState::Unscoped,
                 notes: String::new(),
                 starred: false,
+                // v0.6 P2 #6: defaults for the new fields.
+                method: "GET".to_string(),
+                status: 200,
+                tags: Vec::new(),
             },
             request: small_request(),
             response: Some(response),

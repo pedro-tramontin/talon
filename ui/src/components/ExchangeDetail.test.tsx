@@ -30,6 +30,10 @@ const sampleDetail: ExchangeDetailDto = {
     scope_state: "in_scope",
     notes: "",
     starred: false,
+    // v0.6 P2 #6: defaults for the new fields.
+    method: "GET",
+    status: 200,
+    tags: [],
   },
   request: {
     method: "GET",

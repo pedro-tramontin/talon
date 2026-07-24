@@ -14,7 +14,7 @@
 use crate::error::{Result, StoreError};
 use crate::schema::{
     CURRENT_SCHEMA_VERSION, MIGRATION_001_INITIAL, MIGRATION_002_FTS5_INTERNAL_CONTENT,
-    MIGRATION_003_REPLAY_HISTORY,
+    MIGRATION_003_REPLAY_HISTORY, MIGRATION_004_EXCHANGES_METHOD_STATUS,
 };
 use rusqlite::Connection;
 
@@ -40,6 +40,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 3,
         sql: MIGRATION_003_REPLAY_HISTORY,
+    },
+    Migration {
+        version: 4,
+        sql: MIGRATION_004_EXCHANGES_METHOD_STATUS,
     },
 ];
 

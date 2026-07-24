@@ -70,6 +70,14 @@ pub struct ListExchangesQuery {
 }
 
 /// Summary of a single exchange (the list-view row).
+///
+/// **v0.6 (P2 #6 filter dropdowns, 2026-07-24):** the
+/// `method`, `status`, and `tags` fields mirror the
+/// Tauri `ExchangeSummary` DTO shape so the
+/// browser-mode UI gets the same wire format. The
+/// `tags` field is a `Vec<String>` (just the names);
+/// the right-rail tag-picker still calls `list_tags`
+/// for the full `Tag { id, name, color }` shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeSummary {
     pub id: ExchangeId,
@@ -80,6 +88,12 @@ pub struct ExchangeSummary {
     pub scope_state: String,
     pub starred: bool,
     pub notes: String,
+    /// HTTP method. v0.6 P2 #6.
+    pub method: String,
+    /// HTTP response status code (0 for blocked). v0.6 P2 #6.
+    pub status: u16,
+    /// Tag names attached to this exchange. v0.6 P2 #6.
+    pub tags: Vec<String>,
 }
 
 /// Cursor-paginated list response.
@@ -91,6 +105,12 @@ pub struct ExchangeListPage {
 }
 
 /// `GET /api/exchanges?project_id=...&cursor=...&limit=...`.
+///
+/// v0.6 P2 #6: calls the new `list_recent_with_meta`
+/// engine method so the response carries the `method`,
+/// `status`, and `tags` fields. The wire shape is the
+/// same as the Tauri `ExchangeSummary` DTO (this handler
+/// is the browser-mode mirror).
 pub async fn list_exchanges(
     State(state): State<AppState>,
     Query(q): Query<ListExchangesQuery>,
@@ -99,26 +119,37 @@ pub async fn list_exchanges(
     let offset = q.cursor.unwrap_or(0);
     let limit = q.limit.unwrap_or(100).min(1000);
     let fetch = (offset as u32).saturating_add(limit);
-    let all = engine.list_recent(q.project_id, fetch).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("list_exchanges: {e}"),
-        )
-    })?;
+    // v0.6 P2 #6: use `list_recent_with_meta` so the
+    // new fields are populated (the regular
+    // `list_recent` returns `HttpExchange` with
+    // `method`/`status` from the row but
+    // `tags: Vec::new()`).
+    let all = engine
+        .list_recent_with_meta(q.project_id, fetch)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("list_exchanges: {e}"),
+            )
+        })?;
     let start = offset as usize;
     let end = (start + limit as usize).min(all.len());
     let items: Vec<ExchangeSummary> = if start < all.len() {
         all[start..end]
             .iter()
-            .map(|e| ExchangeSummary {
-                scope_state: format!("{:?}", e.meta.scope_state),
-                id: e.meta.id,
-                project_id: e.meta.project_id,
-                timestamp: e.meta.timestamp,
-                duration_ns: e.meta.duration_ns,
-                summary: e.meta.summary.clone(),
-                starred: e.meta.starred,
-                notes: e.meta.notes.clone(),
+            .map(|m| ExchangeSummary {
+                scope_state: format!("{:?}", m.scope_state),
+                id: m.id,
+                project_id: m.project_id,
+                timestamp: m.timestamp,
+                duration_ns: m.duration_ns,
+                summary: m.summary.clone(),
+                starred: m.starred,
+                notes: m.notes.clone(),
+                // v0.6 P2 #6: pass through the new fields.
+                method: m.method.clone(),
+                status: m.status,
+                tags: m.tags.clone(),
             })
             .collect()
     } else {

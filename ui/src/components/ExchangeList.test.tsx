@@ -157,6 +157,10 @@ function buildFixture(count: number): ExchangeSummary[] {
       scope_state: "in_scope",
       starred: false,
       notes: "",
+      // v0.6 P2 #6: defaults for the new fields.
+      method,
+      status: 200,
+      tags: [],
     });
   }
   return out;

@@ -89,6 +89,21 @@ function useEngineEventHandler() {
         scope_state: exchange.meta.scope_state,
         notes: exchange.meta.notes,
         starred: exchange.meta.starred,
+        // v0.6 P2 #6: the new fields are populated by
+        // the engine at insert time (`Engine::insert_exchange`
+        // extracts `method` + `status` from the
+        // `HttpExchange`). For `tags`, the v0.5 wire
+        // event carries the full `HttpExchange` but
+        // not the joined tag list — the list view's
+        // first render after an `insert` will see
+        // `tags: []`; a subsequent `list_exchanges`
+        // (e.g., on a project switch) will hydrate
+        // the tags via the JOIN. This is the same
+        // "stale until refresh" pattern the rest of
+        // the v0.5 wire-event bus uses.
+        method: exchange.meta.method,
+        status: exchange.meta.status,
+        tags: exchange.meta.tags,
       };
       // The summary path. v0.5 has the engine emit the
       // full exchange, so the list view's `exchanges` array

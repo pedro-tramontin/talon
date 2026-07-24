@@ -21,6 +21,14 @@ use rusqlite::{params, OptionalExtension, Row};
 /// The FTS5 row is inserted in the same transaction. If FTS5 sync
 /// fails, the whole insert rolls back so we never have a row in
 /// `exchanges` that's missing from the search index.
+///
+/// **v0.6 (P2 #6 filter dropdowns, 2026-07-24):** the row's
+/// `method` and `status` columns are populated from the
+/// `HttpExchange` before insert. The `meta.method` and
+/// `meta.status` fields are also written to the in-memory
+/// `meta` struct so the engine's `ExchangeInserted` event
+/// carries the populated values downstream (UI's
+/// `unshiftExchange` uses them in the predicate).
 pub fn insert(pool: &DbPool, exchange: &HttpExchange) -> Result<ExchangeId> {
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
@@ -32,10 +40,30 @@ pub fn insert(pool: &DbPool, exchange: &HttpExchange) -> Result<ExchangeId> {
         .map(serde_json::to_string)
         .transpose()?;
 
+    // v0.6 P2 #6: extract `method` and `status` at insert
+    // time. The `request.method` is always present; the
+    // `response.status` is `None` for blocked / pending
+    // exchanges (see `HttpExchange::response`). The
+    // extracted values are written to the `exchanges`
+    // row's denormalized columns and to the in-memory
+    // `meta` so the engine's emitted event (built from
+    // the same `exchange` arg) carries the populated
+    // fields downstream.
+    let method = exchange.request.method.as_str().to_owned();
+    let status = exchange.response.as_ref().map(|r| r.status).unwrap_or(0);
+    // Clone + mutate the caller's struct so the FTS index
+    // sees the same denormalized values that the row
+    // stores. (Cheap: the bodies are already inside the
+    // JSON blobs; we only swap 3 fields on the meta.)
+    let mut exchange = exchange.clone();
+    exchange.meta.method = method.clone();
+    exchange.meta.status = status;
+    exchange.meta.tags = Vec::new();
+
     tx.execute(
         r#"INSERT INTO exchanges
-            (id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
+            (id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json, method, status)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#,
         params![
             exchange.meta.id.to_string(),
             exchange.meta.project_id.to_string(),
@@ -48,10 +76,12 @@ pub fn insert(pool: &DbPool, exchange: &HttpExchange) -> Result<ExchangeId> {
             exchange.blocked_reason,
             request_json,
             response_json,
+            method,
+            status as i64,
         ],
     )?;
 
-    crate::fts::index_exchange(&tx, exchange)?;
+    crate::fts::index_exchange(&tx, &exchange)?;
     tx.commit()?;
     Ok(exchange.meta.id)
 }
@@ -60,7 +90,7 @@ pub fn insert(pool: &DbPool, exchange: &HttpExchange) -> Result<ExchangeId> {
 pub fn get(pool: &DbPool, id: ExchangeId) -> Result<Option<HttpExchange>> {
     let conn = pool.get()?;
     let mut stmt = conn.prepare(
-        r#"SELECT id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json
+        r#"SELECT id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json, method, status
             FROM exchanges WHERE id = ?1"#,
     )?;
     // In rusqlite 0.32, `query_row().optional()` returns
@@ -76,7 +106,7 @@ pub fn get(pool: &DbPool, id: ExchangeId) -> Result<Option<HttpExchange>> {
 pub fn list_recent(pool: &DbPool, project_id: ProjectId, limit: u32) -> Result<Vec<HttpExchange>> {
     let conn = pool.get()?;
     let mut stmt = conn.prepare(
-        r#"SELECT id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json
+        r#"SELECT id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json, method, status
             FROM exchanges
             WHERE project_id = ?1
             ORDER BY timestamp DESC
@@ -91,6 +121,124 @@ pub fn list_recent(pool: &DbPool, project_id: ProjectId, limit: u32) -> Result<V
         out.push(r?);
     }
     Ok(out)
+}
+
+/// List the most recent N exchanges for a project with their
+/// tags hydrated via a JOIN on `exchange_tags`. v0.6 (P2 #6
+/// filter dropdowns, 2026-07-24).
+///
+/// The result is `Vec<bk_core::ExchangeMeta>` (the thin
+/// row-only shape, not the full `HttpExchange`) so the
+/// Tauri/HTTP list endpoints can ship a lean DTO without
+/// carrying the request/response bodies across the IPC
+/// bridge. The `method` and `status` fields come from the
+/// denormalized columns added by migration 004; the `tags`
+/// field is populated by the `LEFT JOIN` below.
+///
+/// **Query shape:** the JOIN is bounded by the `LIMIT ?2`
+/// on the outer query, so we get at most `limit` distinct
+/// exchanges back (each may carry multiple tag rows,
+/// collapsed into the `Vec<String>` after the GROUP BY).
+/// The N+1 query pattern (one query per exchange for its
+/// tags) is avoided by this single-statement approach.
+///
+/// **Tag ordering:** tags are concatenated in whatever
+/// order SQLite returns them from the GROUP BY, which is
+/// not stable across runs. The UI sorts them
+/// alphabetically in `matchesExchangeFilter`'s tag
+/// substring check anyway, so the wire ordering is not
+/// user-visible.
+pub fn list_recent_with_meta(
+    pool: &DbPool,
+    project_id: ProjectId,
+    limit: u32,
+) -> Result<Vec<bk_core::ExchangeMeta>> {
+    let conn = pool.get()?;
+    // The `GROUP_CONCAT` collapses the multi-row tag
+    // join into a single string per exchange, separated
+    // by U+001F (the ASCII Unit Separator). The split
+    // happens in the row mapper below. The separator is
+    // not user-visible.
+    let mut stmt = conn.prepare(
+        r#"SELECT e.id, e.project_id, e.timestamp, e.duration_ns, e.summary, e.scope_state,
+                  e.notes, e.starred, e.method, e.status,
+                  COALESCE(GROUP_CONCAT(t.name, x'1f'), '') AS tag_names
+            FROM exchanges e
+            LEFT JOIN exchange_tags et ON et.exchange_id = e.id
+            LEFT JOIN tags t ON t.id = et.tag_id
+            WHERE e.project_id = ?1
+            GROUP BY e.id
+            ORDER BY e.timestamp DESC
+            LIMIT ?2"#,
+    )?;
+    let rows = stmt.query_map(params![project_id.to_string(), limit as i64], row_to_meta)?;
+    let mut out = Vec::with_capacity(limit as usize);
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Row mapper for `list_recent_with_meta` — produces
+/// `ExchangeMeta` directly (no request/response bodies).
+/// Indexed columns:
+///   0: id, 1: project_id, 2: timestamp, 3: duration_ns,
+///   4: summary, 5: scope_state, 6: notes, 7: starred,
+///   8: method, 9: status, 10: tag_names (GROUP_CONCAT)
+fn row_to_meta(row: &Row<'_>) -> rusqlite::Result<bk_core::ExchangeMeta> {
+    let id_str: String = row.get(0)?;
+    let pid_str: String = row.get(1)?;
+    let ts_str: String = row.get(2)?;
+    let duration_ns: i64 = row.get(3)?;
+    let summary: String = row.get(4)?;
+    let scope_state: String = row.get(5)?;
+    let notes: String = row.get(6)?;
+    let starred: i64 = row.get(7)?;
+    let method: String = row.get(8)?;
+    let status: i64 = row.get(9)?;
+    let tag_names: String = row.get(10)?;
+    let id: ExchangeId = id_str.parse().map_err(|e: uuid::Error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let project_id: ProjectId = pid_str.parse().map_err(|e: uuid::Error| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let timestamp: DateTime<Utc> = DateTime::parse_from_rfc3339(&ts_str)
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+        })?
+        .with_timezone(&Utc);
+    let scope_state = scope_state_from_str(&scope_state).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    // The U+001F separator is not a legal tag-name
+    // character (tags are human-readable strings),
+    // so the split is unambiguous. An empty
+    // `tag_names` (no LEFT JOIN hits) yields a
+    // single empty-string element, which we filter
+    // out with `filter(|s| !s.is_empty())`.
+    let tags: Vec<String> = if tag_names.is_empty() {
+        Vec::new()
+    } else {
+        tag_names
+            .split('\u{1f}')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned())
+            .collect()
+    };
+    Ok(bk_core::ExchangeMeta {
+        id,
+        project_id,
+        timestamp,
+        duration_ns: duration_ns as u64,
+        summary,
+        scope_state,
+        notes,
+        starred: starred != 0,
+        method,
+        status: status as u16,
+        tags,
+    })
 }
 
 /// Update the free-form notes on an exchange. Used by the right-rail
@@ -123,7 +271,7 @@ pub fn update_notes(pool: &DbPool, id: ExchangeId, notes: &str) -> Result<()> {
     //    — the notes editor just edits one field).
     let exchange = tx
         .query_row(
-            r#"SELECT id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json
+            r#"SELECT id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json, method, status
                FROM exchanges WHERE id = ?1"#,
             params![id.to_string()],
             row_to_exchange,
@@ -208,6 +356,13 @@ pub(crate) fn row_to_exchange(row: &Row<'_>) -> rusqlite::Result<HttpExchange> {
     let blocked_reason: Option<String> = row.get(8)?;
     let request_json: String = row.get(9)?;
     let response_json: Option<String> = row.get(10)?;
+    // v0.6 P2 #6: method and status are denormalized columns
+    // added by migration 004. The default-value rows (empty
+    // string, 0) are filled by the migration's backfill query
+    // for any pre-migration rows, so this is safe even on
+    // legacy data.
+    let method: String = row.get(11)?;
+    let status: i64 = row.get(12)?;
 
     let id: ExchangeId = id_str.parse().map_err(|e: uuid::Error| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -244,6 +399,13 @@ pub(crate) fn row_to_exchange(row: &Row<'_>) -> rusqlite::Result<HttpExchange> {
             scope_state: scope,
             notes,
             starred: starred != 0,
+            method,
+            status: status as u16,
+            // `tags` is populated only by the
+            // `list_recent_with_meta` engine method (a JOIN
+            // on `exchange_tags`). The single-row read paths
+            // (`get` / `list_recent`) don't need it.
+            tags: Vec::new(),
         },
         request,
         response,
@@ -316,6 +478,16 @@ mod tests {
                 scope_state: ScopeState::InScope,
                 notes: String::new(),
                 starred: false,
+                // v0.6 P2 #6: default-test-fixture
+                // values for the new fields. The
+                // `insert` path overwrites them from
+                // the `HttpExchange`'s `request.method`
+                // and `response.status` at runtime, so
+                // the round-trip test asserts the
+                // extraction works as well.
+                method: "GET".to_string(),
+                status: 200,
+                tags: Vec::new(),
             },
             request,
             response: Some(response),

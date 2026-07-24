@@ -291,6 +291,10 @@ mod tests {
                     scope_state: bk_core::ScopeState::InScope,
                     notes: String::new(),
                     starred: false,
+                    // v0.6 P2 #6: defaults for the new fields.
+                    method: "GET".to_string(),
+                    status: 200,
+                    tags: Vec::new(),
                 },
                 request: bk_core::Request::get("https://acme.bb/admin").expect("valid URL"),
                 response: None,

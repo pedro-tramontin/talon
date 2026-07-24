@@ -153,7 +153,7 @@ pub fn rebuild(pool: &DbPool, project_id: ProjectId) -> Result<usize> {
     }
     // Re-insert from the exchanges table.
     let mut stmt = tx.prepare(
-        "SELECT id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json \
+        "SELECT id, project_id, timestamp, duration_ns, summary, scope_state, notes, starred, blocked_reason, request_json, response_json, method, status \
          FROM exchanges WHERE project_id = ?1",
     )?;
     let exchanges: Vec<HttpExchange> = stmt
@@ -242,6 +242,13 @@ mod tests {
                 scope_state: ScopeState::InScope,
                 notes: String::new(),
                 starred: false,
+                // v0.6 P2 #6: defaults for the new
+                // fields. The `insert` path extracts
+                // the real values from the
+                // `HttpExchange` at runtime.
+                method: "GET".to_string(),
+                status: 200,
+                tags: Vec::new(),
             },
             request: Request {
                 method: Method::GET,

@@ -73,6 +73,17 @@ impl From<bk_core::ProjectInfo> for ProjectMeta {
 /// The summary DTO for the exchange list view. Strips the
 /// request/response bodies so a 1000-row page is cheap to
 /// serialize and ship across the IPC bridge.
+///
+/// **v0.6 (P2 #6 filter dropdowns, 2026-07-24):** the
+/// `method`, `status`, and `tags` fields are populated by
+/// the new `list_exchanges` Tauri command (which calls
+/// `Engine::list_recent_with_meta`). The 3 fields are
+/// additive — old callers that only read
+/// `id + project_id + summary` keep working. The `tags`
+/// field is a `Vec<String>` (not the full `Tag` shape)
+/// because the list view only needs the names; the
+/// right-rail tag-picker still calls `list_tags` for the
+/// full `Tag { id, name, color }` shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeSummary {
     pub id: ExchangeId,
@@ -83,6 +94,15 @@ pub struct ExchangeSummary {
     pub scope_state: String,
     pub starred: bool,
     pub notes: String,
+    /// HTTP method (GET / POST / PUT / DELETE / PATCH / …).
+    /// Empty string for exchanges without a request (none
+    /// today, but the schema allows it). v0.6 P2 #6.
+    pub method: String,
+    /// HTTP response status code. 0 for blocked / pending
+    /// exchanges. v0.6 P2 #6.
+    pub status: u16,
+    /// Tag names attached to this exchange. v0.6 P2 #6.
+    pub tags: Vec<String>,
 }
 
 impl From<ExchangeMeta> for ExchangeSummary {
@@ -96,6 +116,13 @@ impl From<ExchangeMeta> for ExchangeSummary {
             summary: m.summary,
             starred: m.starred,
             notes: m.notes,
+            // v0.6 P2 #6: pass through the new fields.
+            // The `From` impl is the canonical
+            // projection — both the Tauri command and
+            // the bk-server HTTP handler use it.
+            method: m.method,
+            status: m.status,
+            tags: m.tags,
         }
     }
 }
@@ -332,26 +359,36 @@ pub fn list_exchanges(
 ) -> Result<ExchangeListPage, String> {
     let offset = cursor.unwrap_or(0);
     let limit = limit.unwrap_or(100).min(1000);
-    // The engine's `list_recent` is LIMIT-only. We simulate an
-    // offset by fetching `offset + limit` rows and slicing off
-    // the first `offset`. This is O(offset + limit) but fine
-    // for the v1 use case (offset is small for cursor walks; the
-    // §4.5 plan's 1000-row fixture uses offsets 0..=9000).
+    // v0.6 P2 #6: call `list_recent_with_meta` so the
+    // `method` / `status` / `tags` fields are populated
+    // (the regular `list_recent` returns `HttpExchange`
+    // with `method`/`status` populated from the row but
+    // `tags: Vec::new()` — the new method does the JOIN
+    // on `exchange_tags` to hydrate the tag names).
     //
-    // TODO(§4.5-followup): add a true `list_recent_with_offset`
-    // to `bk-engine` so the LIMIT is applied at the SQL level
-    // rather than in Rust. The current shape is correct but
-    // O(n) in offset.
+    // The engine's `list_recent_with_meta` is
+    // LIMIT-only (same as `list_recent`). We simulate an
+    // offset by fetching `offset + limit` rows and
+    // slicing off the first `offset`. This is
+    // O(offset + limit) but fine for the v1 use case
+    // (offset is small for cursor walks; the §4.5
+    // plan's 1000-row fixture uses offsets 0..=9000).
+    //
+    // TODO(§4.5-followup): add a true
+    // `list_recent_with_offset` to `bk-engine` so the
+    // LIMIT is applied at the SQL level rather than in
+    // Rust. The current shape is correct but O(n) in
+    // offset.
     let fetch = (offset as u32).saturating_add(limit);
     let all = engine
-        .list_recent(project_id, fetch)
+        .list_recent_with_meta(project_id, fetch)
         .map_err(|e| format!("list_exchanges failed: {e}"))?;
     let start = offset as usize;
     let end = (start + limit as usize).min(all.len());
     let items: Vec<ExchangeSummary> = if start < all.len() {
         all[start..end]
             .iter()
-            .map(|e| ExchangeSummary::from(e.meta.clone()))
+            .map(|m| ExchangeSummary::from(m.clone()))
             .collect()
     } else {
         Vec::new()
@@ -507,6 +544,10 @@ mod tests {
                 scope_state: ScopeState::InScope,
                 notes: String::new(),
                 starred: false,
+                // v0.6 P2 #6: defaults for the new fields.
+                method: "GET".to_string(),
+                status: 200,
+                tags: Vec::new(),
             },
             request: Request {
                 method: Method::GET,

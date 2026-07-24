@@ -61,6 +61,10 @@ const sampleDetail: ExchangeDetail = {
     scope_state: "in_scope",
     notes: "",
     starred: false,
+    // v0.6 P2 #6: defaults for the new fields.
+    method: "GET",
+    status: 200,
+    tags: [],
   },
   request: {
     method: "GET",
@@ -103,6 +107,10 @@ beforeEach(() => {
     scope_state: sampleDetail.meta.scope_state,
     starred: false,
     notes: "",
+    // v0.6 P2 #6: defaults for the new fields.
+    method: "GET",
+    status: 200,
+    tags: [],
   };
   projectStore.setState({
     projects: [

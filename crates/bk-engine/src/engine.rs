@@ -175,6 +175,37 @@ impl Engine {
         bk_store::exchanges::list_recent(&pool, project_id, limit).map_err(Into::into)
     }
 
+    /// List recent exchanges for a project as `ExchangeMeta`
+    /// rows with the `method`, `status`, and `tags` fields
+    /// populated. v0.6 (P2 #6 filter dropdowns,
+    /// 2026-07-24).
+    ///
+    /// The result is the thin `bk_core::ExchangeMeta` shape
+    /// (no request/response bodies) — the Tauri/HTTP list
+    /// endpoints project this to their own `ExchangeSummary`
+    /// DTOs. The `tags` field is hydrated by a single SQL
+    /// `LEFT JOIN` on `exchange_tags` (no N+1 query); the
+    /// `method` and `status` fields are read from the
+    /// denormalized columns added by migration 004.
+    ///
+    /// The existing `list_recent` (returning the full
+    /// `HttpExchange` with bodies) is unchanged — it's still
+    /// used by callers that need the full request/response
+    /// (the right-rail detail view, the replay tabs, the
+    /// fuzzer). This new method is for the list-view
+    /// path that ships summaries across the IPC bridge.
+    pub fn list_recent_with_meta(
+        &self,
+        project_id: ProjectId,
+        limit: u32,
+    ) -> crate::Result<Vec<bk_core::ExchangeMeta>> {
+        let pool = self
+            .projects
+            .get(project_id)
+            .ok_or_else(|| crate::EngineError::ProjectNotOpen(project_id.to_string()))?;
+        bk_store::exchanges::list_recent_with_meta(&pool, project_id, limit).map_err(Into::into)
+    }
+
     /// Search exchanges by FTS5 query string. Returns matching
     /// exchange IDs ranked by FTS5's BM25 (best first).
     pub fn search(

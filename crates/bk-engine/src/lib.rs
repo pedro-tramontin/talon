@@ -39,6 +39,10 @@ mod tests {
                 scope_state: ScopeState::InScope,
                 notes: String::new(),
                 starred: false,
+                // v0.6 P2 #6: defaults for the new fields.
+                method: "GET".to_string(),
+                status: 200,
+                tags: Vec::new(),
             },
             request: Request {
                 method: Method::GET,
@@ -416,5 +420,120 @@ mod tests {
             engine.list_tags_for_exchange(project_id, exchange_id),
             Err(EngineError::ProjectNotOpen(_))
         ));
+    }
+
+    // ── v0.6 P2 #6 (filter dropdowns, 2026-07-24) ───────────
+    //
+    // The new `Engine::list_recent_with_meta` returns
+    // `Vec<ExchangeMeta>` with `method`, `status`, and
+    // `tags` populated. The two tests below pin the
+    // per-field behavior of the JOIN-based read path
+    // (no N+1 query, tags are hydrated by the join).
+    // ------------------------------------------------------------------
+
+    /// `list_recent_with_meta` returns the 3 new fields
+    /// (`method`, `status`, `tags`) for an exchange that
+    /// was inserted via `insert_exchange`. The `method`
+    /// and `status` come from the denormalized columns
+    /// (migration 004); the `tags` come from a JOIN on
+    /// `exchange_tags`.
+    #[test]
+    fn list_recent_with_meta_returns_method_status_and_tags() {
+        let tmp = TempDir::new().unwrap();
+        let engine = Engine::new(tmp.path()).expect("engine");
+        let project = bk_core::Project::new("acme.bb", "acme.bb", "0.1.0");
+        let project_id = project.info.id;
+        engine.open_project(&project).expect("open");
+
+        // Insert one exchange. The fixture has method=GET,
+        // status=200 (from `make_exchange`).
+        let ex = make_exchange(project_id, "/api/users");
+        let ex_id = ex.meta.id;
+        engine.insert_exchange(project_id, &ex).expect("insert");
+
+        // Attach 2 tags. The v0.5 tag system uses
+        // `tag_upsert` (creates or fetches) + `tag_attach`.
+        let admin_id = engine
+            .tag_upsert(
+                project_id,
+                bk_store::tags::NewTag {
+                    name: "admin".into(),
+                    color: None,
+                },
+            )
+            .expect("upsert admin");
+        let vip_id = engine
+            .tag_upsert(
+                project_id,
+                bk_store::tags::NewTag {
+                    name: "vip".into(),
+                    color: None,
+                },
+            )
+            .expect("upsert vip");
+        engine
+            .tag_attach(project_id, admin_id, ex_id)
+            .expect("attach admin");
+        engine
+            .tag_attach(project_id, vip_id, ex_id)
+            .expect("attach vip");
+
+        // Now call `list_recent_with_meta` and assert the
+        // 3 new fields are populated.
+        let metas = engine.list_recent_with_meta(project_id, 10).expect("list");
+        assert_eq!(metas.len(), 1);
+        let m = &metas[0];
+        assert_eq!(m.method, "GET", "method field populated");
+        // The fixture's `make_exchange` has
+        // `response: None`, so the denormalized
+        // `status` column is 0 (the `insert` path
+        // falls through to `unwrap_or(0)`).
+        assert_eq!(m.status, 0, "status field populated (None → 0)");
+        assert_eq!(m.tags.len(), 2, "tags field populated by JOIN");
+        assert!(
+            m.tags.contains(&"admin".to_string()) && m.tags.contains(&"vip".to_string()),
+            "tags contain both attached names: got {:?}",
+            m.tags
+        );
+
+        // The wire-format DTO also round-trips: assert
+        // that `From<ExchangeMeta> for ExchangeSummary`
+        // (in the `app::commands` crate) carries the
+        // values through. We can't directly import the
+        // `app` crate from here, but the `tags` are
+        // visible at this layer (the projection is
+        // trivial and unit-tested in the `app` crate).
+    }
+
+    /// `list_recent_with_meta` returns an empty `tags`
+    /// for an exchange that has no tags attached
+    /// (the LEFT JOIN yields no rows for that
+    /// exchange — the `GROUP_CONCAT` collapses to
+    /// the empty string, which the row mapper
+    /// turns into `vec![]`).
+    #[test]
+    fn list_recent_with_meta_returns_empty_tags_when_none_attached() {
+        let tmp = TempDir::new().unwrap();
+        let engine = Engine::new(tmp.path()).expect("engine");
+        let project = bk_core::Project::new("acme.bb", "acme.bb", "0.1.0");
+        let project_id = project.info.id;
+        engine.open_project(&project).expect("open");
+        let ex = make_exchange(project_id, "/api/x");
+        engine.insert_exchange(project_id, &ex).expect("insert");
+
+        let metas = engine.list_recent_with_meta(project_id, 10).expect("list");
+        assert_eq!(metas.len(), 1);
+        assert!(
+            metas[0].tags.is_empty(),
+            "tags is empty for a row with no attachments: got {:?}",
+            metas[0].tags
+        );
+        // The `method` and `status` fields are still
+        // populated (they come from the denormalized
+        // columns, not the JOIN). `status` is 0
+        // because the fixture's `make_exchange` has
+        // `response: None`.
+        assert_eq!(metas[0].method, "GET");
+        assert_eq!(metas[0].status, 0);
     }
 }
