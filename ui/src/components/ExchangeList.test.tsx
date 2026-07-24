@@ -5,11 +5,32 @@
 // visible window + overscan, not all 1000 rows.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { exchangeStore } from "../state/exchange";
+import { replayStore } from "../state/replay";
+import { projectStore } from "../state/project";
 import type { ExchangeSummary } from "../types/domain";
-import type { ExchangeId } from "../types/ids";
+import type { ExchangeId, ProjectId } from "../types/ids";
+import { asProjectId } from "../types/ids";
 import { ExchangeList } from "./ExchangeList";
+import { openReplayTab } from "../api";
+
+// v0.5+ post-batch gap-fix P1 #4 (2026-07-24):
+// the cache-miss path of the Replay button now
+// calls `openReplayTab` (which returns a
+// `ReplayTabDescriptor` with `body_truncated`)
+// instead of `getExchange`. The test mock
+// returns a descriptor with `body_truncated: true`
+// in the relevant test cases.
+vi.mock("../api", async () => {
+  const actual = await vi.importActual<typeof import("../api")>("../api");
+  return {
+    ...actual,
+    openReplayTab: vi.fn(),
+  };
+});
+
+const openReplayTabMock = vi.mocked(openReplayTab);
 
 // Polyfill `HTMLElement.offsetHeight` / `offsetWidth` so the
 // virtualizer's first measurement (in jsdom) returns a
@@ -108,7 +129,18 @@ function resetStore() {
     selectedId: null,
     filter: { text: "", status: "any", method: "any", tag: "" },
     scrollPosition: 0,
+    details: new Map(),
+    detailsLru: [],
   });
+  replayStore.setState({
+    tabs: [],
+    activeTabId: null,
+  });
+  projectStore.setState({
+    projects: [],
+    activeProjectId: null,
+  });
+  openReplayTabMock.mockReset();
 }
 
 /** Build a 1000-row fixture mirroring the §4.5 spec. */
@@ -193,5 +225,111 @@ describe("ExchangeList", () => {
     // first row's id.
     const expectedId = exchangeStore.getState().exchanges[0]?.id;
     expect(exchangeStore.getState().selectedId).toBe(expectedId);
+  });
+
+  // v0.5+ post-batch gap-fix P1 #4 (2026-07-24):
+  // clicking the Replay button on a cache-miss
+  // calls `openReplayTab` and the new tab's
+  // `bodyTruncated` flag mirrors the descriptor's
+  // `body_truncated`.
+  it("clicking Replay on a cache-miss calls openReplayTab and sets bodyTruncated on the new tab", async () => {
+    // Seed the exchange list with a row whose
+    // detail is NOT in the LRU (so the Replay
+    // click takes the cache-miss path).
+    const summaries = buildFixture(1);
+    exchangeStore.getState().setExchanges(summaries);
+    // Active project is required for the
+    // cache-miss path (the original
+    // `getExchange` fallback needed the project
+    // id; `openReplayTab` reads the project
+    // context from the exchange itself but
+    // `ReplayTab.projectId` is set from the
+    // descriptor's `project_id`).
+    const projectId = asProjectId(
+      "00000000-0000-0000-0000-000000000001",
+    ) as ProjectId;
+    projectStore.setState({
+      projects: [
+        {
+          id: projectId,
+          name: "p1",
+          target_host: "acme.example.com",
+          db_filename: "p1.db",
+        },
+      ],
+      activeProjectId: projectId,
+    });
+    const targetId = summaries[0]!.id;
+    openReplayTabMock.mockResolvedValue({
+      source_exchange_id: targetId,
+      project_id: projectId,
+      request: {
+        method: "GET",
+        url: "https://api.example.com/v1/foo",
+        version: "HTTP/1.1",
+        headers: {},
+        body: { kind: "empty" },
+      },
+      original_response: null,
+      body_truncated: true, // <-- the audit's 1 MB cap kicked in
+    });
+    const { container } = render(<ExchangeList />);
+    const replayButton = container.querySelector(
+      '[data-testid="exchange-list-replay-button"]',
+    ) as HTMLButtonElement;
+    expect(replayButton).toBeInTheDocument();
+    fireEvent.click(replayButton);
+    await waitFor(() => {
+      expect(openReplayTabMock).toHaveBeenCalledWith(targetId);
+    });
+    await waitFor(() => {
+      expect(replayStore.getState().tabs.length).toBe(1);
+    });
+    const tab = replayStore.getState().tabs[0]!;
+    expect(tab.bodyTruncated).toBe(true);
+    expect(tab.sourceExchangeId).toBe(targetId);
+  });
+
+  it("clicking Replay on a cache-miss with body_truncated=false creates a tab with bodyTruncated=false", async () => {
+    const summaries = buildFixture(1);
+    exchangeStore.getState().setExchanges(summaries);
+    const projectId = asProjectId(
+      "00000000-0000-0000-0000-000000000001",
+    ) as ProjectId;
+    projectStore.setState({
+      projects: [
+        {
+          id: projectId,
+          name: "p1",
+          target_host: "acme.example.com",
+          db_filename: "p1.db",
+        },
+      ],
+      activeProjectId: projectId,
+    });
+    const targetId = summaries[0]!.id;
+    openReplayTabMock.mockResolvedValue({
+      source_exchange_id: targetId,
+      project_id: projectId,
+      request: {
+        method: "GET",
+        url: "https://api.example.com/v1/foo",
+        version: "HTTP/1.1",
+        headers: {},
+        body: { kind: "empty" },
+      },
+      original_response: null,
+      body_truncated: false,
+    });
+    const { container } = render(<ExchangeList />);
+    fireEvent.click(
+      container.querySelector(
+        '[data-testid="exchange-list-replay-button"]',
+      ) as HTMLButtonElement,
+    );
+    await waitFor(() => {
+      expect(replayStore.getState().tabs.length).toBe(1);
+    });
+    expect(replayStore.getState().tabs[0]!.bodyTruncated).toBe(false);
   });
 });
