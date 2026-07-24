@@ -327,6 +327,22 @@ export function ReplayRequestEditor({ tabId }: Props) {
       data-testid="replay-request-editor"
       className="flex h-full flex-col space-y-2 bg-bg-base p-3 text-xs"
     >
+      {/* v0.5+ post-batch gap-fix P1 #4 (2026-07-24):
+       * render the 1 MB body-cap notice when the
+       * source tab was opened from a truncated
+       * `openReplayTab` response. Hidden when the
+       * flag is `false` (the cache-hit path; the LRU
+       * never holds truncated bodies). */}
+      {tab?.bodyTruncated && (
+        <div
+          data-testid="replay-request-editor-body-truncated-notice"
+          role="status"
+          className="rounded border border-amber-700 bg-amber-900/30 px-3 py-2 text-amber-200"
+        >
+          Response body truncated to 1 MB by the engine. Re-send the
+          request to see the full response body.
+        </div>
+      )}
       <input
         data-testid="replay-request-editor-line"
         value={requestLine}

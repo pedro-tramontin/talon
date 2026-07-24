@@ -38,7 +38,7 @@ import {
 import { useUiStore, FTS_DEBOUNCE_MS } from "../state/ui";
 import { useReplayStore } from "../state/replay";
 import { useProjectStore } from "../state/project";
-import { getExchange, searchExchanges } from "../api";
+import { openReplayTab, searchExchanges } from "../api";
 import type { ExchangeSummary } from "../types/domain";
 import type { ExchangeId } from "../types/ids";
 import { LEFT_RAIL_PX } from "../routes/Capture";
@@ -372,7 +372,6 @@ function ReplayButton({ rowId }: { rowId: ExchangeId }) {
   const setMode = useUiStore((s) => s.setMode);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const getDetail = useExchangeStore((s) => s.getDetail);
-  const putDetail = useExchangeStore((s) => s.putDetail);
 
   return (
     <button
@@ -383,41 +382,70 @@ function ReplayButton({ rowId }: { rowId: ExchangeId }) {
         // Synchronous cache lookup.
         const cached = getDetail(rowId);
         if (cached) {
+          // Cache hit: the LRU never holds truncated
+          // bodies (it stores the full `ExchangeDetail`
+          // from the engine's wire-bus event), so the
+          // `body_truncated` flag is always `false` here.
           openTab({
             exchangeId: cached.meta.id,
             summary: cached.meta.summary,
             request: cached.request,
             response: cached.response,
             projectId: cached.meta.project_id,
+            bodyTruncated: false,
           });
           setMode("replay");
           return;
         }
-        // Cache miss: fetch from the engine. The user's
-        // active project id is the source of truth for
-        // which DB the engine queries.
+        // Cache miss: round-trip the
+        // `open_replay_tab` Tauri command. The
+        // command returns a `ReplayTabDescriptor`
+        // with the `body_truncated` flag (v0.5+
+        // post-batch gap-fix P1 #4, 2026-07-24).
+        // The `body_truncated` flag is propagated
+        // into the new tab so the ReplayRequestEditor
+        // can render the 1 MB cap notice.
+        //
+        // The user's active project id is the
+        // source of truth for which DB the engine
+        // queries.
         if (!activeProjectId) {
-          console.error("Replay: no active project; cannot fetch detail");
+          console.error("Replay: no active project; cannot open tab");
           return;
         }
-        getExchange(activeProjectId, rowId)
-          .then((detail) => {
-            if (!detail) {
-              console.error("Replay: exchange not found in engine", rowId);
+        openReplayTab(rowId)
+          .then((descriptor) => {
+            if (!descriptor) {
+              console.error("Replay: open_replay_tab returned null", rowId);
               return;
             }
-            putDetail(detail);
+            // The `ReplayTabDescriptor.request` is the
+            // same shape as `ExchangeRequest`, so it
+            // feeds `openTab` directly. The
+            // `body_truncated` flag drives the
+            // truncation notice in the request
+            // editor.
+            //
+            // We don't have an `ExchangeDetail`
+            // payload from the IPC (the descriptor
+            // is a slimmed-down DTO), so we don't
+            // populate the LRU cache here. The next
+            // click on the same row will use the
+            // cache (if the engine has since pushed
+            // a wire-bus event for it) or hit the
+            // IPC again. Either way is correct.
             openTab({
-              exchangeId: detail.meta.id,
-              summary: detail.meta.summary,
-              request: detail.request,
-              response: detail.response,
-              projectId: detail.meta.project_id,
+              exchangeId: rowId,
+              summary: "", // descriptor doesn't carry the summary; the tab's `name` defaults work fine
+              request: descriptor.request,
+              response: descriptor.original_response,
+              projectId: descriptor.project_id,
+              bodyTruncated: descriptor.body_truncated,
             });
             setMode("replay");
           })
           .catch((err) => {
-            console.error("Replay: getExchange failed", err);
+            console.error("Replay: openReplayTab failed", err);
           });
       }}
       className="invisible text-xs text-slate-500 opacity-0 hover:text-accent group-hover:visible group-hover:opacity-100 focus-visible:visible focus-visible:opacity-100"
