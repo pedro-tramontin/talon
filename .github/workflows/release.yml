@@ -89,7 +89,7 @@ jobs:
       - name: Build Tauri bundle (Linux)
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
         with:
           # The tag that triggered the workflow. tauri-action strips
           # the `v` prefix when stamping bundle metadata.
@@ -183,7 +183,7 @@ jobs:
 
       - name: Propagate Apple signing secrets (no-op if APPLE_CERTIFICATE is absent)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           # These six values are interpolated by GitHub Actions into
           # the step's process env. If the corresponding secret is
           # not configured, the value is the empty string — and the
@@ -247,8 +247,21 @@ jobs:
         # signing is configured, and absent otherwise. The Tauri CLI's
         # `var_os("APPLE_CERTIFICATE")` returns None when the var is
         # not set, which is the correct "no signing" signal.
+        #
+        # **Use `RELEASE_PLEASE_TOKEN` (a fine-grained PAT), NOT
+        # `GITHUB_TOKEN` (the default integration token).** The
+        # default GITHUB_TOKEN is intentionally blocked by GitHub
+        # from triggering downstream workflows — but ALSO has
+        # read-only `contents:` scope for runs that were triggered
+        # by a tag push from a different workflow (like
+        # release-please). That breaks tauri-action's "upload
+        # assets to the release" step with "Resource not accessible
+        # by integration". The `RELEASE_PLEASE_TOKEN` PAT has
+        # `Contents: Read and write` + `Pull requests: Read and write`
+        # scopes and works in both the release-please workflow
+        # AND the release.yml workflow that release-please triggers.
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
         uses: tauri-apps/tauri-action@v0
         with:
           tagName: ${{ github.ref_name }}
@@ -289,7 +302,7 @@ jobs:
       - name: Build Tauri bundle (Windows)
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Talon ${{ github.ref_name }}"
@@ -319,7 +332,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Publish draft release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
           # If the release is still in draft (rare: would happen if
