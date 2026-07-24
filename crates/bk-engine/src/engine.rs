@@ -372,6 +372,16 @@ impl Engine {
         self.projects.open_ids()
     }
 
+    /// List the `ProjectInfo` for every currently-open project,
+    /// newest-first by `created_at`. The v0.5+ post-batch P3 #9
+    /// gap-fix wires the UI's `setProjects` action to a
+    /// `list_projects` Tauri command that calls this method. See
+    /// `Projects::list_open_projects` for the scope (only
+    /// open projects, not every project ever created).
+    pub fn list_open_projects(&self) -> Vec<bk_core::ProjectInfo> {
+        self.projects.list_open_projects()
+    }
+
     /// Get the full `Project` (info + settings) for an open project.
     /// Returns `ProjectNotOpen` if the project is not open. Used by
     /// the Phase 6 Tauri commands (`list_scope_rules`,
