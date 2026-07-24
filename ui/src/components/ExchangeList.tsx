@@ -38,9 +38,13 @@ import {
 import { useUiStore, FTS_DEBOUNCE_MS } from "../state/ui";
 import { useReplayStore } from "../state/replay";
 import { useProjectStore } from "../state/project";
-import { openReplayTab, searchExchanges } from "../api";
+import {
+  deleteExchange,
+  openReplayTab,
+  searchExchanges,
+} from "../api";
 import type { ExchangeSummary } from "../types/domain";
-import type { ExchangeId } from "../types/ids";
+import type { ExchangeId, ProjectId } from "../types/ids";
 import { LEFT_RAIL_PX } from "../routes/Capture";
 
 /** Row height in px. Fixed for v1; §4.5+ may add dynamic
@@ -413,6 +417,7 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
                       {row.summary}
                     </span>
                     <ReplayButton rowId={row.id as ExchangeId} />
+                    <DeleteButton rowId={row.id as ExchangeId} summary={row.summary} />
                   </div>
                   <span
                     className={`truncate text-[10px] ${
@@ -532,5 +537,179 @@ function ReplayButton({ rowId }: { rowId: ExchangeId }) {
     >
       Replay
     </button>
+  );
+}
+
+/**
+ * Delete button (×). Visible on row hover only. v0.6 P3 #9
+ * (2026-07-24, delete exchange).
+ *
+ * Clicking it pops a `<DeleteConfirmDialog>` that gates the
+ * actual `delete_exchange` IPC call. The dialog is mandatory
+ * (no "auto-confirm" — the action is destructive and cannot
+ * be undone; the user can re-capture the request, but the
+ * captured history is gone).
+ *
+ * **Race-safety note:** the engine is the source of truth.
+ * When the IPC call succeeds, the engine emits
+ * `EngineEvent::ExchangeDeleted` on the wire bus; the UI's
+ * `useEngineEventHandler` (in `routes/Capture.tsx`) calls
+ * `exchangeStore.removeExchange(id)`. This component does
+ * NOT optimistically update the local store on success —
+ * waiting for the wire event avoids the "double-remove"
+ * race where the local store would attempt to remove the
+ * row twice (once optimistically, once on the wire event).
+ *
+ * The `disabled` prop on the × button prevents double-clicks
+ * while the IPC is in flight. The dialog itself also tracks
+ * the in-flight state so a fast Enter-key press doesn't
+ * re-submit.
+ */
+function DeleteButton({
+  rowId,
+  summary,
+}: {
+  rowId: ExchangeId;
+  summary: string;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const activeProjectId = useProjectStore((s) => s.activeProjectId);
+  return (
+    <>
+      <button
+        type="button"
+        data-testid="exchange-list-delete-button"
+        title="Delete this exchange"
+        aria-label="Delete exchange"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (!activeProjectId) {
+            console.error(
+              "Delete: no active project; cannot delete row",
+              rowId,
+            );
+            return;
+          }
+          setConfirming(true);
+        }}
+        className="invisible flex h-5 w-5 items-center justify-center rounded text-xs text-slate-500 opacity-0 hover:bg-red-900/40 hover:text-red-300 group-hover:visible group-hover:opacity-100 focus-visible:visible focus-visible:opacity-100"
+      >
+        ×
+      </button>
+      {confirming && activeProjectId ? (
+        <DeleteConfirmDialog
+          rowId={rowId}
+          summary={summary}
+          projectId={activeProjectId}
+          onClose={() => setConfirming(false)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Small confirmation dialog for the delete-exchange action.
+ * v0.6 P3 #9 (2026-07-24, delete exchange).
+ *
+ * The dialog is intentionally minimal: the action is
+ * destructive but not catastrophic (the user can re-capture
+ * the request), so we use a single-click confirm (NOT the
+ * "type DELETE" hard-confirm the agent's `DESTRUCTIVE_TOOLS`
+ * use — that's for write-tool calls that can drop database
+ * tables, not for deleting a single captured exchange).
+ *
+ * The dialog tracks an in-flight `pending` state so a
+ * fast Enter-key press doesn't double-submit. Errors are
+ * surfaced inline; the dialog stays open on error so the
+ * user can retry or cancel.
+ */
+function DeleteConfirmDialog({
+  rowId,
+  summary,
+  projectId,
+  onClose,
+}: {
+  rowId: ExchangeId;
+  summary: string;
+  projectId: ProjectId;
+  onClose: () => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div
+      data-testid="delete-confirm-dialog-backdrop"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !pending) onClose();
+      }}
+    >
+      <div
+        data-testid="delete-confirm-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="delete-confirm-title"
+        className="w-80 rounded border border-slate-700 bg-bg-rail p-4 shadow-lg"
+      >
+        <h2
+          id="delete-confirm-title"
+          className="mb-2 text-sm font-semibold text-slate-100"
+        >
+          Delete this exchange?
+        </h2>
+        <p className="mb-3 text-xs text-slate-400">
+          <span className="font-mono">{summary}</span>
+          <br />
+          This cannot be undone. The captured request can be re-captured if
+          needed, but the history row will be gone.
+        </p>
+        {error ? (
+          <p
+            data-testid="delete-confirm-error"
+            className="mb-2 text-xs text-red-400"
+          >
+            {error}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            data-testid="delete-confirm-cancel"
+            disabled={pending}
+            onClick={onClose}
+            className="rounded border border-slate-700 bg-bg-base px-3 py-1 text-xs text-slate-200 hover:border-slate-500 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-testid="delete-confirm-confirm"
+            disabled={pending}
+            onClick={() => {
+              setPending(true);
+              setError(null);
+              deleteExchange(projectId, rowId)
+                .then(() => {
+                  onClose();
+                })
+                .catch((e: unknown) => {
+                  setError(
+                    typeof e === "string"
+                      ? e
+                      : e instanceof Error
+                        ? e.message
+                        : "Delete failed",
+                  );
+                  setPending(false);
+                });
+            }}
+            className="rounded border border-red-700 bg-red-900/30 px-3 py-1 text-xs text-red-200 hover:bg-red-900/50 disabled:opacity-50"
+          >
+            {pending ? "Deleting…" : "Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

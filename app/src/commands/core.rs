@@ -423,6 +423,37 @@ pub fn get_exchange(
         .map_err(|e| format!("get_exchange failed: {e}"))
 }
 
+/// `delete_exchange(project_id, id) -> Result<(), String>`.
+///
+/// v0.6 P3 #9 (2026-07-24, delete exchange). Thin
+/// pass-through to `Engine::delete_exchange`. The engine
+/// already:
+///   - Removes the FTS5 row.
+///   - CASCADEs the `exchange_tags` join rows.
+///   - Emits `EngineEvent::ExchangeDeleted { id, project_id }`
+///     on the wire bus (the UI's `useEngineEventHandler`
+///     wires this to `exchangeStore.removeExchange(id)`,
+///     so the local list updates without an explicit
+///     `setExchanges(...)` round-trip).
+///
+/// The `project_id` is taken as an explicit arg (NOT
+/// fetched from the UI's `activeProjectId`) so the
+/// IPC contract is unambiguous: the caller knows exactly
+/// which project's row it's deleting. The engine's
+/// `ProjectNotOpen` error path is the safety net for the
+/// case where the project was closed between the list
+/// click and the delete.
+#[tauri::command]
+pub fn delete_exchange(
+    engine: State<'_, EngineArc>,
+    project_id: ProjectId,
+    id: ExchangeId,
+) -> Result<(), String> {
+    engine
+        .delete_exchange(project_id, id)
+        .map_err(|e| format!("delete_exchange failed: {e}"))
+}
+
 /// `proxy_status() -> ProxyStatus`. The current proxy state
 /// (bound addr + CA fingerprint when running, or `Stopped` /
 /// `Error` otherwise). Cheap to call; the Tauri command is
@@ -826,5 +857,23 @@ mod tests {
     #[test]
     fn update_notes_command_is_publicly_exported() {
         let _ = update_notes;
+    }
+
+    // v0.6 P3 #9 (2026-07-24, delete exchange):
+    // 1 surface-symbol test (the same pattern as
+    // `update_notes_command_is_publicly_exported`).
+    // The Tauri `State<'_, EngineArc>` wrapper is
+    // private in tauri 2.x (no public `State::new`
+    // constructor), so we can't call the command
+    // body verbatim. The actual end-to-end
+    // `Engine::delete_exchange` path is already
+    // covered by the 3 tests in
+    // `bk_engine::tests::engine_delete_exchange_*`.
+    // The thin Tauri pass-through is a 3-line
+    // `engine.delete_exchange(...).map_err(...)`
+    // — covered by the surface-symbol test below.
+    #[test]
+    fn delete_exchange_command_is_publicly_exported() {
+        let _ = delete_exchange;
     }
 }
