@@ -1,5 +1,14 @@
 // Vitest cases for the Phase 6 §6.7 `SettingsModal` component.
 //
+// v0.5+ post-batch gap-fix P2 #5 (2026-07-24): the
+// modal was historically titled "Settings" but only
+// contains the Match & Replace editor. The rename
+// (P2 #5) is a label change, not a component rename —
+// the `data-testid` and the `aria-label` were updated
+// to reflect the new title. The "renders the title" +
+// "aria-label" cases assert the new "Match & Replace"
+// string.
+//
 // The modal:
 //   - is unmounted when `settingsOpen` is false (the
 //     `if (!settingsOpen) return null` gate)
@@ -9,6 +18,9 @@
 //   - does NOT close on inner-panel click (the
 //     `e.stopPropagation` on the inner div)
 //   - closes on the explicit "✕" close button
+//   - shows the future-settings note (a `text-xs`
+//     hint that the broader settings surface is a
+//     future phase)
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
@@ -57,14 +69,38 @@ describe("SettingsModal", () => {
       uiStore.getState().setSettingsOpen(true);
     });
     render(<SettingsModal />);
+    // P2 #5: the title is "Match & Replace" (was "Settings"
+    // in v0.4). The character entity is decoded to `&`
+    // by the DOM, so we assert the decoded string.
     expect(screen.getByTestId("settings-modal-title").textContent).toBe(
-      "Settings",
+      "Match & Replace",
     );
     expect(screen.getByTestId("settings-modal")).toBeDefined();
+    // P2 #5: the `aria-label` on the dialog also reflects
+    // the new title (a11y is in sync with the visible
+    // label; mismatches would break screen readers).
+    expect(
+      screen.getByTestId("settings-modal").getAttribute("aria-label"),
+    ).toBe("Match and Replace");
     // The MatchReplaceEditor renders an add button + table;
     // both should be present in the modal.
     expect(screen.getByTestId("match-replace-editor")).toBeDefined();
     expect(screen.getByTestId("match-replace-editor-add")).toBeDefined();
+  });
+
+  it("shows the future-settings note when the modal is open", () => {
+    act(() => {
+      uiStore.getState().setSettingsOpen(true);
+    });
+    render(<SettingsModal />);
+    // P2 #5: the small `text-xs` note documents the
+    // future settings surface (theme, telemetry, etc.)
+    // so the user knows the M&R editor is the only
+    // settings section for now. Asserting on the
+    // testid is enough; the prose is documentation.
+    const note = screen.getByTestId("settings-modal-future-note");
+    expect(note).toBeDefined();
+    expect(note.textContent).toMatch(/future phase/);
   });
 
   it("closes on overlay click", () => {

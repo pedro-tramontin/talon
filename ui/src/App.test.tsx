@@ -6,10 +6,18 @@ import { App } from "./App";
 // it pulls in) call `invoke` for commands and `listen` for the
 // `wire_event` channel. We stub both here so the test doesn't
 // require a running Tauri runtime.
+//
+// v0.5+ post-batch gap-fix P3 #9 (2026-07-24): the App
+// startup hook also calls `list_projects` to rehydrate
+// `projectStore.projects`. The mock returns an empty
+// array (the test doesn't depend on a project).
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => {
     if (cmd === "greet") {
       return { message: "Hello from Talon", version: "0.1.0" };
+    }
+    if (cmd === "list_projects") {
+      return [];
     }
     return null;
   }),

@@ -290,6 +290,27 @@ pub fn close_project(engine: State<'_, EngineArc>, id: ProjectId) -> Result<(), 
     Ok(())
 }
 
+/// `list_projects() -> Vec<ProjectInfo>`. Returns the
+/// `ProjectInfo` for every currently-open project,
+/// newest-first by `created_at`. The v0.5+ post-batch
+/// P3 #9 gap-fix wires the UI's `setProjects` action
+/// to this command (it was dead code before because
+/// no Tauri command ever populated the project list
+/// from disk on app startup).
+///
+/// **Scope:** only currently-open projects are returned.
+/// A "list every project ever opened on this machine"
+/// command would require either a shared global DB or
+/// a directory scan of the projects dir — both are
+/// out of scope for v0.5+ post-batch and land in a
+/// later phase. The UI's project dropdown already
+/// shows the open-projects list, so `setProjects`
+/// just rehydrates that list on startup.
+#[tauri::command]
+pub fn list_projects(engine: State<'_, EngineArc>) -> Result<Vec<bk_core::ProjectInfo>, String> {
+    Ok(engine.list_open_projects())
+}
+
 /// `list_exchanges(project_id, cursor, limit) -> ExchangeListPage`.
 ///
 /// Cursor-paginated. `cursor: 0` is the first page; `limit`
@@ -674,6 +695,7 @@ mod tests {
         // `app/src/lib.rs` is the canonical signature check.
         let _ = open_project;
         let _ = close_project;
+        let _ = list_projects;
         let _ = list_exchanges;
         let _ = get_exchange;
         let _ = proxy_status;

@@ -204,4 +204,92 @@ describe("ReplayView", () => {
     expect(tab.draftRequest.method).toBe("PUT");
     expect(tab.draftRequest.url).toBe("/loaded");
   });
+
+  // v0.5+ post-batch gap-fix P2 #7 (2026-07-24):
+  // the "← back to source" button on the replay tab
+  // bar. Hidden when the tab has no `sourceExchangeId`
+  // (the user typed a fresh replay from scratch);
+  // shown otherwise; click navigates the user to
+  // the source exchange + switches `uiStore.mode`
+  // back to "capture".
+
+  it("the back-to-source button is hidden for tabs with no sourceExchangeId", () => {
+    // `openTab` requires a non-null `exchangeId`; for
+    // a fresh-from-scratch replay the tab is created
+    // by another path (Phase 5 §5.4 "new replay"
+    // command, which writes the tab directly). For
+    // this test we push a tab with `sourceExchangeId:
+    // null` directly into the store via `setState`.
+    replayStore.setState((s) => ({
+      tabs: [
+        ...s.tabs,
+        {
+          id: crypto.randomUUID(),
+          name: "fresh replay",
+          draftRequest: REQ_A,
+          latestResponse: null,
+          sourceExchangeId: null,
+          latestReplayId: null,
+          history: [],
+          sending: false,
+          projectId: null,
+          bodyTruncated: false,
+        },
+      ],
+      activeTabId: s.tabs[0]?.id ?? null,
+    }));
+    // Make sure the just-pushed tab is active.
+    const state = replayStore.getState();
+    const newTab = state.tabs[state.tabs.length - 1];
+    replayStore.setState({ activeTabId: newTab.id });
+    render(<ReplayView />);
+    expect(
+      screen.queryByTestId("replay-view-back-to-source"),
+    ).toBeNull();
+  });
+
+  it("the back-to-source button is shown for tabs with a sourceExchangeId", () => {
+    const src = newExchangeId();
+    replayStore.getState().openTab({
+      exchangeId: src,
+      summary: "from capture",
+      request: REQ_A,
+      response: null,
+    });
+    render(<ReplayView />);
+    const btn = screen.getByTestId("replay-view-back-to-source");
+    expect(btn).toBeTruthy();
+    // The button's aria-label is "Back to source exchange"
+    // (a11y text for screen readers).
+    expect(btn.getAttribute("aria-label")).toBe("Back to source exchange");
+  });
+
+  it("clicking the back-to-source button sets selectedId and switches mode to capture", async () => {
+    const { exchangeStore } = await import("../state/exchange");
+    const { uiStore } = await import("../state/ui");
+    const src = newExchangeId();
+    // Seed the active tab with a source id + put the UI
+    // in replay mode.
+    const tabId = replayStore.getState().openTab({
+      exchangeId: src,
+      summary: "from capture",
+      request: REQ_A,
+      response: null,
+    });
+    expect(replayStore.getState().activeTabId).toBe(tabId);
+    act(() => {
+      uiStore.getState().setMode("replay");
+    });
+    expect(uiStore.getState().mode).toBe("replay");
+    render(<ReplayView />);
+    const btn = screen.getByTestId("replay-view-back-to-source");
+    act(() => {
+      fireEvent.click(btn);
+    });
+    // The source exchange is now the selected exchange.
+    expect(exchangeStore.getState().selectedId).toBe(src);
+    // The mode is back to "capture" so the user lands
+    // on the source exchange's detail view.
+    expect(uiStore.getState().mode).toBe("capture");
+  });
 });

@@ -139,6 +139,7 @@ pub fn run() {
             greet,
             commands::core::open_project,
             commands::core::close_project,
+            commands::core::list_projects,
             commands::core::list_exchanges,
             commands::core::get_exchange,
             commands::core::proxy_status,

@@ -181,6 +181,27 @@ export async function closeProject(id: DomainProjectId): Promise<void> {
   await invoke<void>("close_project", { id });
 }
 
+/**
+ * `list_projects() -> ProjectMeta[]`. v0.5+ post-batch
+ * P3 #9 gap-fix (2026-07-24): the `setProjects` Zustand
+ * action was dead code because no Tauri command ever
+ * populated the project list from the engine. This
+ * wrapper surfaces the new `list_projects` Rust command
+ * to the UI; the engine's `Engine::list_open_projects`
+ * method returns the open-projects list (newest-first
+ * by `created_at`). The UI's `App` startup hook calls
+ * this once and pipes the result into
+ * `projectStore.setProjects`.
+ *
+ * **Scope:** only currently-open projects are returned.
+ * A "list every project ever opened on this machine"
+ * command would require a global registry; that's a
+ * later phase.
+ */
+export async function listProjects(): Promise<ProjectMeta[]> {
+  return await invoke<ProjectMeta[]>("list_projects");
+}
+
 /** `list_exchanges(project_id, cursor?, limit?) -> ExchangeListPage`. */
 export async function listExchanges(
   project_id: DomainProjectId,

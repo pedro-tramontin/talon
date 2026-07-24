@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { greet, type Greeting } from "./api";
+import { greet, listProjects, type Greeting } from "./api";
 import { AgentPanel } from "./components/AgentPanel";
 import { Capture } from "./routes/Capture";
 import { SettingsModal } from "./components/SettingsModal";
@@ -12,6 +12,7 @@ import {
 import { getWireClient, setWireClient, WireClient } from "./lib/ws";
 import { wsStore } from "./state/ws";
 import { proxyStore } from "./state/proxy";
+import { projectStore } from "./state/project";
 import type { AgentConfig } from "./types/agent";
 import type { ProxyStatus } from "./types/domain";
 
@@ -69,6 +70,31 @@ export function App() {
     greet()
       .then(setGreeting)
       .catch((e) => setError(String(e)));
+  }, []);
+
+  // v0.5+ post-batch gap-fix P3 #9 (2026-07-24): the
+  // `setProjects` Zustand action was dead code because
+  // no Tauri command ever populated the project list
+  // from the engine. This `listProjects` startup hook
+  // fires once on app mount, calls the new
+  // `list_projects` Tauri command (the engine returns
+  // every currently-open project, newest-first by
+  // `created_at`), and pipes the result into
+  // `projectStore.setProjects` so the project dropdown
+  // rehydrates without a manual refresh.
+  //
+  // The call is fire-and-forget for the visible UI (the
+  // dropdown shows an empty list during the brief
+  // startup window) but the error is logged so a
+  // thrown Tauri command surfaces in DevTools.
+  useEffect(() => {
+    listProjects()
+      .then((projects) => {
+        projectStore.getState().setProjects(projects);
+      })
+      .catch((e) => {
+        console.warn("App: listProjects failed:", e);
+      });
   }, []);
 
   // Global Cmd-K / Ctrl-K listener. We attach once on mount and
