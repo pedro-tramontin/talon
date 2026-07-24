@@ -34,7 +34,10 @@ pub fn api_routes() -> Router<AppState> {
             "/exchanges",
             get(handlers::list_exchanges).post(handlers::search_exchanges),
         )
-        .route("/exchanges/:id", get(handlers::get_exchange))
+        .route(
+            "/exchanges/:id",
+            get(handlers::get_exchange).delete(handlers::delete_exchange),
+        )
         // Proxy control
         .route("/proxy/start", post(handlers::start_proxy))
         .route("/proxy/stop", post(handlers::stop_proxy))

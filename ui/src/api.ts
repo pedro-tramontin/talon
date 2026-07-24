@@ -246,6 +246,34 @@ export async function updateNotes(
   });
 }
 
+/**
+ * `delete_exchange(project_id, id) -> ()`. v0.6 P3 #9
+ * (2026-07-24, delete exchange).
+ *
+ * The Rust side removes the FTS5 row, CASCADEs the
+ * `exchange_tags` join rows, and emits
+ * `EngineEvent::ExchangeDeleted { id, project_id }` on
+ * the wire bus. The UI's `useEngineEventHandler`
+ * (in `routes/Capture.tsx`) wires that event to
+ * `exchangeStore.removeExchange(id)`, so the local
+ * list updates without an explicit `setExchanges(...)`
+ * round-trip.
+ *
+ * **Caller is responsible for the confirm dialog.**
+ * This is a destructive action that cannot be undone.
+ * The ExchangeList's × button uses the
+ * `<ConfirmDialog>` component to gate the call.
+ */
+export async function deleteExchange(
+  project_id: DomainProjectId,
+  id: DomainExchangeId,
+): Promise<void> {
+  await invoke<void>("delete_exchange", {
+    projectId: project_id,
+    id,
+  });
+}
+
 /** `proxy_status() -> ProxyStatus`. */
 export async function proxyStatus(): Promise<ProxyStatus> {
   return await invoke<ProxyStatus>("proxy_status");

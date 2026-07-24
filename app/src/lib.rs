@@ -142,6 +142,12 @@ pub fn run() {
             commands::core::list_projects,
             commands::core::list_exchanges,
             commands::core::get_exchange,
+            // v0.6 P3 #9 (2026-07-24): delete-exchange
+            // Tauri command. The engine's
+            // `Engine::delete_exchange` was already in
+            // place at HEAD; only the IPC wrapper was
+            // missing.
+            commands::core::delete_exchange,
             commands::core::proxy_status,
             commands::core::start_proxy,
             commands::core::stop_proxy,

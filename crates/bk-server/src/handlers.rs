@@ -181,9 +181,30 @@ pub async fn get_exchange(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("get_exchange: {e}"),
             )
-        })
-        .and_then(|opt| opt.ok_or((StatusCode::NOT_FOUND, format!("exchange {id} not found"))))
+        })?
         .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("exchange {id} not found")))
+}
+
+/// `DELETE /api/exchanges/:id?project_id=...`.
+///
+/// v0.6 P3 #9 (2026-07-24, delete exchange). Browser-mode
+/// mirror of the Tauri `delete_exchange` command. The
+/// engine's `Engine::delete_exchange` is unchanged from
+/// its v0.5 form (it was already in place at HEAD); this
+/// handler is the thin HTTP wrapper.
+pub async fn delete_exchange(
+    State(state): State<AppState>,
+    Path(id): Path<ExchangeId>,
+    Query(q): Query<ProjectIdQuery>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state.store.delete_exchange(q.project_id, id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("delete_exchange: {e}"),
+        )
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize)]
