@@ -73,6 +73,20 @@ function useEngineEventHandler() {
         summary?: string;
         exchange?: ExchangeDetailType;
       };
+      // v0.6 P3 #9 (2026-07-24, delete exchange):
+      // the `exchange_deleted` variant carries
+      // `{ id, project_id }` (no `exchange` field).
+      // We remove the row from the local store so the
+      // list view updates immediately. The engine is
+      // the source of truth (the row is already gone
+      // from disk), so the local delete is a UX nicety,
+      // not a correctness requirement.
+      if (p.kind === "exchange_deleted") {
+        if (p.id) {
+          exchangeStore.getState().removeExchange(p.id);
+        }
+        return;
+      }
       if (p.kind !== "exchange_inserted") return;
       // The summary path. v0.5 has the engine emit the
       // full exchange, but the list view still shows just

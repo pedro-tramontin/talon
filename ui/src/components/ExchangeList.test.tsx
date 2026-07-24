@@ -13,7 +13,7 @@ import type { ExchangeSummary } from "../types/domain";
 import type { ExchangeId, ProjectId } from "../types/ids";
 import { asProjectId } from "../types/ids";
 import { ExchangeList } from "./ExchangeList";
-import { openReplayTab } from "../api";
+import { deleteExchange, openReplayTab } from "../api";
 
 // v0.5+ post-batch gap-fix P1 #4 (2026-07-24):
 // the cache-miss path of the Replay button now
@@ -22,15 +22,21 @@ import { openReplayTab } from "../api";
 // instead of `getExchange`. The test mock
 // returns a descriptor with `body_truncated: true`
 // in the relevant test cases.
+//
+// v0.6 P3 #9 (2026-07-24, delete exchange):
+// also mock `deleteExchange` so the click flow
+// can be exercised without a real Tauri IPC.
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
     ...actual,
     openReplayTab: vi.fn(),
+    deleteExchange: vi.fn(),
   };
 });
 
 const openReplayTabMock = vi.mocked(openReplayTab);
+const deleteExchangeMock = vi.mocked(deleteExchange);
 
 // Polyfill `HTMLElement.offsetHeight` / `offsetWidth` so the
 // virtualizer's first measurement (in jsdom) returns a
@@ -335,5 +341,157 @@ describe("ExchangeList", () => {
       expect(replayStore.getState().tabs.length).toBe(1);
     });
     expect(replayStore.getState().tabs[0]!.bodyTruncated).toBe(false);
+  });
+});
+
+// v0.6 P3 #9 (2026-07-24, delete exchange): the ×
+// button on each row + the confirm dialog + the
+// `deleteExchange` IPC wiring. The tests below pin
+// the click flow end-to-end and the wire-event
+// driven local-store update.
+describe("ExchangeList delete button (v0.6 P3 #9)", () => {
+  beforeEach(() => {
+    // Reset the store and seed with one row. The
+    // `projectStore` is set up with an active project
+    // so the DeleteButton can resolve the
+    // `activeProjectId` it needs to call
+    // `deleteExchange(projectId, id)`.
+    projectStore.setState({
+      projects: [
+        {
+          id: asProjectId("00000000-0000-0000-0000-0000000000aa"),
+          name: "acme",
+          target_host: "acme.bb",
+          db_filename: "acme.db",
+        },
+      ],
+      activeProjectId: asProjectId(
+        "00000000-0000-0000-0000-0000000000aa",
+      ),
+    });
+    exchangeStore.setState({
+      exchanges: [
+        {
+          id: "ex-1" as ExchangeId,
+          project_id: asProjectId(
+            "00000000-0000-0000-0000-0000000000aa",
+          ),
+          timestamp: "2026-07-24T12:00:00.000Z",
+          duration_ns: 0,
+          summary: "GET /api/v1/users",
+          scope_state: "in_scope",
+          starred: false,
+          notes: "",
+          // v0.6 P2 #6 (filter dropdowns): the new
+          // `method` / `status` / `tags` fields default
+          // to these values in the test fixture.
+          method: "GET",
+          status: 200,
+          tags: [],
+        },
+      ],
+      selectedId: null,
+      filter: {
+        text: "",
+        status: "any",
+        method: "any",
+        tag: "",
+      },
+      scrollPosition: 0,
+      details: new Map(),
+      detailsLru: [],
+    });
+    deleteExchangeMock.mockReset();
+    deleteExchangeMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    projectStore.setState({ projects: [], activeProjectId: null });
+  });
+
+  it("renders the × button on each row (data-testid)", () => {
+    const { container } = render(<ExchangeList />);
+    expect(
+      container.querySelectorAll(
+        '[data-testid="exchange-list-delete-button"]',
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("clicking × opens the confirm dialog", () => {
+    const { container } = render(<ExchangeList />);
+    const deleteBtn = container.querySelector(
+      '[data-testid="exchange-list-delete-button"]',
+    ) as HTMLButtonElement;
+    fireEvent.click(deleteBtn);
+    expect(
+      screen.queryByTestId("delete-confirm-dialog"),
+    ).toBeInTheDocument();
+  });
+
+  it("clicking Cancel in the confirm dialog closes it without calling deleteExchange", () => {
+    const { container } = render(<ExchangeList />);
+    fireEvent.click(
+      container.querySelector(
+        '[data-testid="exchange-list-delete-button"]',
+      ) as HTMLButtonElement,
+    );
+    fireEvent.click(screen.getByTestId("delete-confirm-cancel"));
+    expect(
+      screen.queryByTestId("delete-confirm-dialog"),
+    ).not.toBeInTheDocument();
+    expect(deleteExchangeMock).not.toHaveBeenCalled();
+  });
+
+  it("clicking Delete in the confirm dialog calls deleteExchange(projectId, id)", async () => {
+    const { container } = render(<ExchangeList />);
+    fireEvent.click(
+      container.querySelector(
+        '[data-testid="exchange-list-delete-button"]',
+      ) as HTMLButtonElement,
+    );
+    fireEvent.click(screen.getByTestId("delete-confirm-confirm"));
+    await waitFor(() => {
+      expect(deleteExchangeMock).toHaveBeenCalledTimes(1);
+    });
+    expect(deleteExchangeMock).toHaveBeenCalledWith(
+      asProjectId("00000000-0000-0000-0000-0000000000aa"),
+      "ex-1" as ExchangeId,
+    );
+  });
+
+  it("the local store is updated when the engine emits exchange_deleted (via removeExchange)", () => {
+    // The wire event handler in `routes/Capture.tsx`
+    // calls `exchangeStore.removeExchange(id)` on
+    // `exchange_deleted`. The × button itself does
+    // NOT optimistically update the local store (the
+    // engine is the source of truth; the wire event
+    // is the trigger). This test exercises the
+    // store action directly to pin the contract.
+    exchangeStore.setState({
+      exchanges: [
+        {
+          id: "ex-1" as ExchangeId,
+          project_id: asProjectId(
+            "00000000-0000-0000-0000-0000000000aa",
+          ),
+          timestamp: "2026-07-24T12:00:00.000Z",
+          duration_ns: 0,
+          summary: "GET /api/v1/users",
+          scope_state: "in_scope",
+          starred: false,
+          notes: "",
+          // v0.6 P2 #6 (filter dropdowns): the new
+          // `method` / `status` / `tags` fields default
+          // to these values in the test fixture.
+          method: "GET",
+          status: 200,
+          tags: [],
+        },
+      ],
+    });
+    expect(exchangeStore.getState().exchanges.length).toBe(1);
+    exchangeStore.getState().removeExchange("ex-1" as ExchangeId);
+    expect(exchangeStore.getState().exchanges.length).toBe(0);
   });
 });
