@@ -169,6 +169,10 @@ fn append_and_list_replay_history_round_trip() {
             scope_state: bk_core::ScopeState::Unscoped,
             notes: String::new(),
             starred: false,
+            // v0.6 P2 #6: defaults for the new fields.
+            method: "GET".to_string(),
+            status: 200,
+            tags: Vec::new(),
         },
         request: bk_core::Request {
             method: bk_core::Method::GET,

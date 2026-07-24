@@ -40,6 +40,10 @@ fn make_seed(project_id: bk_core::ProjectId) -> HttpExchange {
             scope_state: ScopeState::InScope,
             notes: String::new(),
             starred: false,
+            // v0.6 P2 #6: defaults for the new fields.
+            method: "GET".to_string(),
+            status: 200,
+            tags: Vec::new(),
         },
         request: Request {
             method: Method::GET,
@@ -70,6 +74,10 @@ fn replayed_exchange(project_id: bk_core::ProjectId, response_bytes: Vec<u8>) ->
             scope_state: ScopeState::InScope,
             notes: String::new(),
             starred: false,
+            // v0.6 P2 #6: defaults for the new fields.
+            method: "GET".to_string(),
+            status: 200,
+            tags: Vec::new(),
         },
         request: Request {
             method: Method::GET,

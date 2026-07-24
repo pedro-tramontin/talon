@@ -330,6 +330,18 @@ pub struct Response {
 
 /// Metadata about a single request/response pair (the "exchange").
 /// This is what gets indexed in the SQLite FTS5 search.
+///
+/// **v0.6 (added 2026-07-24, P2 #6 filter dropdowns):** the
+/// `method` and `status` fields are denormalized from
+/// `HttpExchange.request.method` and `HttpExchange.response.status`
+/// at insert time and persisted in their own columns
+/// (migration 004). This makes them cheap to read in the
+/// list view (a single row scan, no JSON parse of
+/// `request_json`/`response_json`). The `tags` field is
+/// populated by the `list_recent_with_meta` engine method
+/// (a JOIN on `exchange_tags`); on freshly-inserted exchanges
+/// the field is `vec![]` (the join is the only way to populate
+/// it — there's no denormalized tag list on the row).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeMeta {
     pub id: crate::ExchangeId,
@@ -345,6 +357,21 @@ pub struct ExchangeMeta {
     pub notes: String,
     /// True if the user marked this exchange as interesting (the ⭐ tag).
     pub starred: bool,
+    /// HTTP method (GET / POST / PUT / DELETE / PATCH / …).
+    /// Empty string for exchanges without a request (none today,
+    /// but the schema allows it). Denormalized from
+    /// `HttpExchange.request.method` at insert time.
+    pub method: String,
+    /// HTTP response status code (200, 404, 500, …). 0 for
+    /// blocked exchanges (no response) or unscoped (request
+    /// never sent). Denormalized from
+    /// `HttpExchange.response.status` at insert time.
+    pub status: u16,
+    /// Tags attached to this exchange. Populated by the
+    /// `list_recent_with_meta` engine method (JOIN on
+    /// `exchange_tags`); empty for fresh inserts (the
+    /// `insert` path doesn't read tags).
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -447,6 +474,10 @@ mod tests {
                 scope_state: ScopeState::InScope,
                 notes: String::new(),
                 starred: false,
+                // v0.6 P2 #6: defaults for the new fields.
+                method: "GET".to_string(),
+                status: 200,
+                tags: Vec::new(),
             },
             request: r,
             response: Some(resp),

@@ -239,25 +239,92 @@ export function useExchangeStore<T>(selector: (state: ExchangeStore) => T): T {
 }
 
 /**
- * Predicate: does this row match the given filter? v0.1 only
- * wires the `text` field (free-text substring on `summary`);
- * the status / method / tag fields stay present on the
- * filter state for v0.2 to fill in. We expose the helper so
- * tests can exercise the matching logic without standing up
- * a renderer.
+ * Predicate: does this row match the given filter? v0.6
+ * (P2 #6 filter dropdowns, 2026-07-24) extends this to
+ * honor all 4 fields of `ExchangeFilter`:
+ *
+ * - `text`: case-insensitive substring on `summary` +
+ *   `notes` (existing behavior + the notes enhancement).
+ * - `method`: exact match on `row.method` (or "any" →
+ *   pass). The spec calls this the "Method" dropdown.
+ * - `status`: range match — 2xx = 200-299, 3xx = 300-399,
+ *   4xx = 400-499, 5xx = 500-599, "any" → pass. The
+ *   `row.status === 0` (blocked / pending) case is
+ *   excluded from all the range buckets — it can only
+ *   match a "any" filter.
+ * - `tag`: case-insensitive substring on `row.tags` (any
+ *   tag matches → pass). The free-text input matches the
+ *   spec's "Tag" filter.
+ *
+ * The predicate is exposed so tests can exercise the
+ * matching logic without standing up a renderer.
  */
 export function matchesExchangeFilter(
   row: ExchangeSummary,
   filter: ExchangeFilter,
 ): boolean {
-  // Text filter: case-insensitive substring on the summary.
-  // An empty filter text is the "any text" case (no-op).
+  // Text filter: case-insensitive substring on the summary
+  // + notes. An empty filter text is the "any text" case
+  // (no-op). v0.6: also search `notes` (the previous
+  // v0.1 behavior only searched `summary`).
   if (filter.text.trim().length > 0) {
     const needle = filter.text.trim().toLowerCase();
-    const hay = row.summary.toLowerCase();
-    if (!hay.includes(needle)) return false;
+    const haySummary = row.summary.toLowerCase();
+    const hayNotes = (row.notes ?? "").toLowerCase();
+    if (!haySummary.includes(needle) && !hayNotes.includes(needle)) {
+      return false;
+    }
+  }
+  // Method filter: exact match on `row.method`, or "any"
+  // → pass. The dropdown's "any" sentinel is the empty
+  // string "" or "any" (the UI normalizes both).
+  if (filter.method && filter.method !== "any") {
+    if (row.method !== filter.method) return false;
+  }
+  // Status filter: range match. "any" or "" → pass.
+  // The row's `status` is 0 for blocked / pending; those
+  // rows can only match an "any" filter.
+  if (filter.status && filter.status !== "any") {
+    const loHi = statusRange(filter.status);
+    if (loHi === null) return false;
+    const [lo, hi] = loHi;
+    if (row.status < lo || row.status > hi) return false;
+  }
+  // Tag filter: case-insensitive substring on any of the
+  // row's tag names. An empty filter tag is the "any"
+  // case (no-op).
+  if (filter.tag.trim().length > 0) {
+    const needle = filter.tag.trim().toLowerCase();
+    const matches = (row.tags ?? []).some((t) =>
+      t.toLowerCase().includes(needle),
+    );
+    if (!matches) return false;
   }
   return true;
+}
+
+/**
+ * Map the `filter.status` dropdown value (e.g. "2xx",
+ * "3xx", "4xx", "5xx", or "any") to a `[lo, hi]` range.
+ * Returns `null` for unknown values (caller should treat
+ * as "passes" — see the predicate's check). Exposed for
+ * the test suite.
+ */
+export function statusRange(
+  bucket: string,
+): [number, number] | null {
+  switch (bucket) {
+    case "2xx":
+      return [200, 299];
+    case "3xx":
+      return [300, 399];
+    case "4xx":
+      return [400, 499];
+    case "5xx":
+      return [500, 599];
+    default:
+      return null;
+  }
 }
 
 /**
@@ -286,7 +353,21 @@ export function useFilteredExchanges(): ExchangeSummary[] {
     exchangeStore,
     useShallow((state) => [state.exchanges, state.filter] as const),
   );
-  if (filter.text.trim().length === 0) {
+  // v0.6 P2 #6: the predicate is the single source of
+  // truth for filtering. The previous v0.1 short-circuit
+  // (`if filter.text is empty, return all`) was a
+  // micro-optimization that quietly disabled the new
+  // method / status / tag dropdowns when the text
+  // input was empty (the common case). Now the
+  // predicate handles every field; the `text`-only
+  // case is just the "all of `matchesExchangeFilter`'s
+  // text branches are vacuously true" path.
+  if (
+    filter.text.trim().length === 0 &&
+    (filter.method === "" || filter.method === "any") &&
+    (filter.status === "" || filter.status === "any") &&
+    filter.tag.trim().length === 0
+  ) {
     return exchanges;
   }
   return exchanges.filter((e) => matchesExchangeFilter(e, filter));

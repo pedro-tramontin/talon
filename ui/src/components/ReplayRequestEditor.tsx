@@ -203,6 +203,12 @@ export function ReplayRequestEditor({ tabId }: Props) {
           scope_state: "unscoped",
           starred: exchange.meta.starred,
           notes: exchange.meta.notes,
+          // v0.6 P2 #6: pass through the new fields
+          // from the in-memory `HttpExchange` (the
+          // wire event carries the full body).
+          method: exchange.meta.method,
+          status: exchange.meta.status,
+          tags: exchange.meta.tags,
         });
       }
     } catch (e) {

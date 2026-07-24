@@ -55,6 +55,10 @@ fn make_exchange(project_id: bk_core::ProjectId, i: u32, body: &str) -> HttpExch
             scope_state: ScopeState::InScope,
             notes: String::new(),
             starred: false,
+            // v0.6 P2 #6: defaults for the new fields.
+            method: "GET".to_string(),
+            status: 200,
+            tags: Vec::new(),
         },
         request: Request {
             method: Method::GET,

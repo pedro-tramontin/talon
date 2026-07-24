@@ -99,6 +99,12 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
   // `useFilteredExchanges` selector reads.
   const [filterInput, setFilterInput] = useState("");
   const setFilter = useExchangeStore((s) => s.setFilter);
+  // v0.6 P2 #6: read the filter object directly so the
+  // 3 new dropdowns (status, method, tag) can be
+  // controlled. The `useFilteredExchanges` hook reads
+  // it too, but the JSX needs the live values for the
+  // `value=` props on the `<select>` and `<input>`.
+  const filter = useExchangeStore((s) => s.filter);
   const setSelectedId = useExchangeStore((s) => s.setSelectedId);
   const selectedId = useExchangeStore((s) => s.selectedId);
 
@@ -253,25 +259,80 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
           placeholder="summary…"
           className="w-full rounded border border-slate-700 bg-bg-base px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-accent focus:outline-none"
         />
-        {/* v0.5+ post-batch gap-fix P2 #6 (2026-07-24):
-         * the 3 new filter dropdowns (status, method, tag)
-         * are DEFERRED to a v0.5+ follow-up. The audit's
-         * spec assumed `ExchangeSummary.status`,
-         * `ExchangeSummary.method`, and `ExchangeSummary.tag`
-         * fields exist, but they do NOT — the
-         * `ExchangeSummary` DTO
-         * (`app/src/commands/core.rs:76-86`) only carries
-         * `id`, `project_id`, `timestamp`, `duration_ns`,
-         * `summary`, `scope_state`, `starred`, `notes`. The
-         * predicate at `ui/src/state/exchange.ts:249-261`
-         * can be extended to honor `status`/`method`/`tag`,
-         * but the source data is not on the summary — it
-         * would need a Rust-side change to `ExchangeSummary`
-         * (add the 3 fields + populate them in
-         * `From<ExchangeMeta>`). See the §5b deviation
-         * entry in the per-phase `state.md`. The `text`
-         * filter (the only one with source data) still
-         * works; the new dropdowns are a future PR. */}
+        {/* v0.6 P2 #6 (2026-07-24): the 3 missing filter
+         * dropdowns (Status, Method, Tag) are now wired.
+         * The 3 dropdowns feed the `filter.status` /
+         * `filter.method` / `filter.tag` fields of the
+         * existing `ExchangeFilter` store shape (the
+         * fields were already present in the store from
+         * the v0.1 spec — only the predicate + the UI
+         * were missing). The dropdowns use the existing
+         * `setFilter` Zustand action; no new store
+         * action is needed. See `state/exchange.ts` for
+         * the predicate and the `useFilteredExchanges`
+         * hook. */}
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <div>
+            <label
+              htmlFor="exchange-list-status"
+              className="mb-1 block text-[10px] uppercase tracking-wide text-slate-500"
+            >
+              Status
+            </label>
+            <select
+              id="exchange-list-status"
+              data-testid="exchange-list-status"
+              value={filter.status}
+              onChange={(e) => setFilter({ status: e.target.value })}
+              className="w-full rounded border border-slate-700 bg-bg-base px-2 py-1 text-sm text-slate-100 focus:border-accent focus:outline-none"
+            >
+              <option value="any">any</option>
+              <option value="2xx">2xx</option>
+              <option value="3xx">3xx</option>
+              <option value="4xx">4xx</option>
+              <option value="5xx">5xx</option>
+            </select>
+          </div>
+          <div>
+            <label
+              htmlFor="exchange-list-method"
+              className="mb-1 block text-[10px] uppercase tracking-wide text-slate-500"
+            >
+              Method
+            </label>
+            <select
+              id="exchange-list-method"
+              data-testid="exchange-list-method"
+              value={filter.method}
+              onChange={(e) => setFilter({ method: e.target.value })}
+              className="w-full rounded border border-slate-700 bg-bg-base px-2 py-1 text-sm text-slate-100 focus:border-accent focus:outline-none"
+            >
+              <option value="any">any</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+              <option value="PATCH">PATCH</option>
+            </select>
+          </div>
+        </div>
+        <div className="mt-2">
+          <label
+            htmlFor="exchange-list-tag"
+            className="mb-1 block text-[10px] uppercase tracking-wide text-slate-500"
+          >
+            Tag
+          </label>
+          <input
+            id="exchange-list-tag"
+            data-testid="exchange-list-tag"
+            type="text"
+            value={filter.tag}
+            onChange={(e) => setFilter({ tag: e.target.value })}
+            placeholder="tag contains…"
+            className="w-full rounded border border-slate-700 bg-bg-base px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-accent focus:outline-none"
+          />
+        </div>
         <label
           htmlFor="exchange-list-fts"
           className="mt-3 mb-1 block text-xs uppercase tracking-wide text-slate-400"

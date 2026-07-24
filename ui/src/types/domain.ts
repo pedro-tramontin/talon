@@ -59,6 +59,32 @@ export interface ExchangeSummary {
   readonly scope_state: ScopeState;
   readonly starred: boolean;
   readonly notes: string;
+  /**
+   * HTTP method (GET / POST / PUT / DELETE / PATCH / …).
+   * Empty string for exchanges without a request. Added by
+   * v0.6 P2 #6 (filter dropdowns, 2026-07-24). The
+   * backend (Tauri `list_exchanges` + bk-server
+   * `list_exchanges`) populates this from the
+   * denormalized `exchanges.method` column.
+   */
+  readonly method: string;
+  /**
+   * HTTP response status code. 0 for blocked / pending
+   * exchanges. Added by v0.6 P2 #6 (filter dropdowns,
+   * 2026-07-24). The backend populates this from the
+   * denormalized `exchanges.status` column.
+   */
+  readonly status: number;
+  /**
+   * Tag names attached to this exchange. Empty for
+   * exchanges with no tags. Added by v0.6 P2 #6 (filter
+   * dropdowns, 2026-07-24). The backend hydrates this
+   * via a LEFT JOIN on `exchange_tags` at list time
+   * (no N+1 query). The right-rail tag-picker still
+   * uses `list_tags` for the full `Tag { id, name,
+   * color }` shape.
+   */
+  readonly tags: readonly string[];
 }
 
 export type ScopeState = "in_scope" | "out_of_scope" | "blocked" | "unscoped";
@@ -138,6 +164,15 @@ export interface ExchangeResponse {
  * `bk_core::ExchangeMeta`. The `id` and `project_id` are
  * the same UUIDs the list view sees (so a click in the list
  * can correlate to a detail row).
+ *
+ * **v0.6 (P2 #6 filter dropdowns, 2026-07-24):** the
+ * `method` and `status` fields are populated by the
+ * engine at insert time (denormalized from the
+ * `HttpExchange`'s `request.method` and
+ * `response.status`). The `tags` field is empty on
+ * fresh inserts (it's populated only by the
+ * `list_recent_with_meta` JOIN — a per-id read via
+ * `get_exchange` doesn't pay for the join).
  */
 export interface ExchangeDetailMeta {
   readonly id: ExchangeId;
@@ -149,6 +184,14 @@ export interface ExchangeDetailMeta {
   readonly scope_state: ScopeState;
   readonly notes: string;
   readonly starred: boolean;
+  /** HTTP method. Empty string for exchanges without a
+   * request. v0.6 P2 #6. */
+  readonly method: string;
+  /** HTTP response status code (0 for blocked). v0.6 P2 #6. */
+  readonly status: number;
+  /** Tag names. Empty for fresh inserts (the JOIN
+   * populates it only on the list path). v0.6 P2 #6. */
+  readonly tags: readonly string[];
 }
 
 /**

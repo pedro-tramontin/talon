@@ -110,6 +110,10 @@ mod tests {
                 scope_state: ScopeState::InScope,
                 notes: String::new(),
                 starred: false,
+                // v0.6 P2 #6: defaults for the new fields.
+                method: method.as_str().to_string(),
+                status: 200,
+                tags: Vec::new(),
             },
             request: Request {
                 method,

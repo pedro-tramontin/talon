@@ -5,12 +5,13 @@
 // independent.
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { fireEvent, render, renderHook, screen } from "@testing-library/react";
 import {
   exchangeStore,
   matchesExchangeFilter,
   useFilteredExchanges,
 } from "./exchange";
+import { ExchangeList } from "../components/ExchangeList";
 import { asExchangeId, asProjectId } from "../types/ids";
 import type { ExchangeSummary } from "../types/domain";
 
@@ -24,6 +25,10 @@ function makeSummary(name: string): ExchangeSummary {
     scope_state: "in_scope",
     starred: false,
     notes: "",
+    // v0.6 P2 #6: defaults for the new fields.
+    method: "GET",
+    status: 200,
+    tags: [],
   };
 }
 
@@ -37,6 +42,10 @@ function makePostSummary(name: string): ExchangeSummary {
     scope_state: "in_scope",
     starred: false,
     notes: "",
+    // v0.6 P2 #6: defaults for the new fields.
+    method: "POST",
+    status: 200,
+    tags: [],
   };
 }
 
@@ -191,6 +200,100 @@ describe("matchesExchangeFilter", () => {
     expect(
       matchesExchangeFilter(row, { text: "POST", status: "any", method: "any", tag: "" }),
     ).toBe(false);
+  });
+});
+
+// v0.6 P2 #6 (2026-07-24): the 3 new filter fields
+// (method, status, tag) are now honored by the
+// predicate. The tests below pin the per-field
+// behavior + the 4-field matrix + the dropdowns'
+// `setFilter` call.
+describe("matchesExchangeFilter (v0.6 P2 #6 — method/status/tag)", () => {
+  // A row with method=GET, status=200, tags=["admin",
+  // "vip"] so the tests can exercise every combination.
+  const row: ExchangeSummary = {
+    ...makeSummary("users"),
+    method: "GET",
+    status: 200,
+    tags: ["admin", "vip"],
+  };
+  const filter = (over: Partial<{
+    text: string;
+    method: string;
+    status: string;
+    tag: string;
+  }> = {}) => ({
+    text: over.text ?? "",
+    method: over.method ?? "any",
+    status: over.status ?? "any",
+    tag: over.tag ?? "",
+  });
+
+  it("method filter: exact match passes", () => {
+    expect(matchesExchangeFilter(row, filter({ method: "GET" }))).toBe(true);
+  });
+
+  it("method filter: mismatched method rejects", () => {
+    expect(matchesExchangeFilter(row, filter({ method: "POST" }))).toBe(false);
+  });
+
+  it("status filter: 2xx range passes for status 200", () => {
+    expect(matchesExchangeFilter(row, filter({ status: "2xx" }))).toBe(true);
+  });
+
+  it("status filter: 4xx range rejects status 200", () => {
+    expect(matchesExchangeFilter(row, filter({ status: "4xx" }))).toBe(false);
+  });
+
+  it("tag filter: case-insensitive substring on any tag passes", () => {
+    expect(matchesExchangeFilter(row, filter({ tag: "adm" }))).toBe(true);
+    expect(matchesExchangeFilter(row, filter({ tag: "VIP" }))).toBe(true);
+  });
+
+  it("tag filter: substring missing from all tags rejects", () => {
+    expect(matchesExchangeFilter(row, filter({ tag: "billing" }))).toBe(false);
+  });
+
+  it("4-field matrix: text + method + status + tag compose with AND", () => {
+    // Build a row that matches all 4. The fixture's
+    // `summary` is "GET /api/users" — substring "users"
+    // matches. Method GET, status 200, tag "adm" matches.
+    expect(
+      matchesExchangeFilter(
+        row,
+        filter({ text: "users", method: "GET", status: "2xx", tag: "adm" }),
+      ),
+    ).toBe(true);
+    // Same but tag mismatches → reject.
+    expect(
+      matchesExchangeFilter(
+        row,
+        filter({ text: "users", method: "GET", status: "2xx", tag: "billing" }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("ExchangeList filter dropdowns (v0.6 P2 #6 — UI wiring)", () => {
+  it("changing the status dropdown triggers setFilter with the new value", () => {
+    render(<ExchangeList />);
+    const statusSelect = screen.getByTestId("exchange-list-status") as HTMLSelectElement;
+    fireEvent.change(statusSelect, { target: { value: "4xx" } });
+    expect(exchangeStore.getState().filter.status).toBe("4xx");
+  });
+
+  it("changing the method dropdown triggers setFilter with the new value", () => {
+    render(<ExchangeList />);
+    const methodSelect = screen.getByTestId("exchange-list-method") as HTMLSelectElement;
+    fireEvent.change(methodSelect, { target: { value: "POST" } });
+    expect(exchangeStore.getState().filter.method).toBe("POST");
+  });
+
+  it("typing in the tag input triggers setFilter with the new value", () => {
+    render(<ExchangeList />);
+    const tagInput = screen.getByTestId("exchange-list-tag") as HTMLInputElement;
+    fireEvent.change(tagInput, { target: { value: "admin" } });
+    expect(exchangeStore.getState().filter.tag).toBe("admin");
   });
 });
 
