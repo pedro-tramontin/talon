@@ -11,7 +11,9 @@ import {
 } from "./state/agent";
 import { getWireClient, setWireClient, WireClient } from "./lib/ws";
 import { wsStore } from "./state/ws";
+import { proxyStore } from "./state/proxy";
 import type { AgentConfig } from "./types/agent";
+import type { ProxyStatus } from "./types/domain";
 
 /**
  * Default config for the Cmd-K palette. Mirrors
@@ -159,6 +161,44 @@ export function App() {
         // the local UI.
       },
     );
+    return unsub;
+  }, []);
+
+  // v0.5+ post-batch gap-fix (2026-07-24, P0 #1) —
+  // subscribe to `proxy_event` wire events. The Rust
+  // side translates `bk-proxy` lifecycle events into a
+  // `ProxyStatus` payload and forwards them on the
+  // `proxy_event` channel (the kind has been declared in
+  // `ui/src/lib/ws.ts:34` since Phase 8 but was never
+  // subscribed). The handler is the canonical source of
+  // truth for the proxy status pill in `ProxyControl`;
+  // the click handler in `ProxyControl.tsx` does an
+  // optimistic local update + a defensive
+  // `proxyStatus()` refresh, but the wire handler is
+  // what keeps the UI in sync across tabs and across
+  // an app reload (where the optimistic state is
+  // forgotten but the next wire event re-seeds it).
+  useEffect(() => {
+    const client = getWireClient();
+    const unsub = client.subscribe("proxy_event", (payload) => {
+      // The Rust `bk-proxy` side encodes the payload as
+      // the `ProxyStatus` DTO (snake_case serde). The
+      // defensive cast handles the case where the wire
+      // receives a malformed event (the `dispatch` loop
+      // in `WireClient` already logs handler errors and
+      // keeps streaming).
+      const status = payload as ProxyStatus;
+      if (
+        status &&
+        (status.state === "stopped" ||
+          status.state === "running" ||
+          status.state === "error")
+      ) {
+        proxyStore.getState().setStatus(status);
+      } else {
+        console.warn("App: malformed proxy_event payload:", payload);
+      }
+    });
     return unsub;
   }, []);
 
