@@ -99,7 +99,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "app"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bk-agent",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "bk-agent"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "bk-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "bk-engine"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bk-core",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "bk-events"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bk-core",
  "serde",
@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "bk-mcp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bk-core",
@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "bk-proxy"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "bk-store"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bk-core",
  "chrono",
