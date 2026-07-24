@@ -14,7 +14,7 @@
 /// bump this number. Bumping tells the runner: "after running
 /// migrations up to and including this version, this is what the DB
 /// should look like."
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 /// Migration 001 — initial schema. Creates every table the rest of
 /// the codebase reads from. Idempotent: uses `CREATE TABLE IF NOT EXISTS`
@@ -206,4 +206,56 @@ CREATE INDEX IF NOT EXISTS idx_replay_history_tab_seq
 
 CREATE INDEX IF NOT EXISTS idx_replay_history_project_ts
     ON replay_history (project_id, timestamp DESC);
+"#;
+
+/// Migration 004 — adds the `method` and `status` columns to
+/// `exchanges` (v0.6 P2 #6 filter dropdowns, 2026-07-24).
+/// The `exchanges` row carries a denormalized copy of the
+/// HTTP method and response status so the list view can
+/// filter on them without parsing the JSON blobs in
+/// `request_json` / `response_json`. The values are written
+/// at insert time by `bk_store::exchanges::insert` (and by
+/// migration 004's backfill, which reads from the JSON
+/// blobs and fills the new columns for any pre-migration
+/// rows).
+///
+/// **Why denormalize:** the list view's `ExchangeSummary`
+/// DTO now includes `method` and `status` (the v0.6 P2 #6
+/// filter dropdowns need them on the wire). Shipping
+/// `method` + `status` as denormalized columns keeps the
+/// list query a single `SELECT` over indexed columns; the
+/// alternative (extracting them from the JSON blobs on
+/// every read) would force a per-row `json_extract()` in
+/// the list query, which is a measurable cost on a 1000-row
+/// page.
+///
+/// **Why not a `tags` column:** the `exchange_tags` join
+/// table is the source of truth for tag attachment. The
+/// `list_recent_with_meta` engine method JOINs on it at
+/// read time — no need to denormalize, and the join is
+/// cheap with the existing `idx_exchange_tags_tag` index.
+///
+/// **Idempotency:** SQLite's `ALTER TABLE ... ADD COLUMN`
+/// has no `IF NOT EXISTS` clause. The migration is wrapped
+/// in a transaction by the runner, but the column-add
+/// itself will fail on a re-run (the column already
+/// exists). The runner's `version > current` guard prevents
+/// that — a DB at version 4 won't re-apply migration 4.
+pub const MIGRATION_004_EXCHANGES_METHOD_STATUS: &str = r#"
+ALTER TABLE exchanges ADD COLUMN method TEXT NOT NULL DEFAULT '';
+ALTER TABLE exchanges ADD COLUMN status INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_exchanges_project_method
+    ON exchanges (project_id, method);
+CREATE INDEX IF NOT EXISTS idx_exchanges_project_status
+    ON exchanges (project_id, status);
+
+-- Backfill: for pre-migration rows, extract `method` and
+-- `status` from the JSON blobs. The `json_extract` calls
+-- are safe on the empty-string default rows that the
+-- `INSERT OR IGNORE` path uses.
+UPDATE exchanges
+SET
+    method = COALESCE(json_extract(request_json, '$.method'), ''),
+    status = COALESCE(CAST(json_extract(response_json, '$.status') AS INTEGER), 0)
+WHERE method = '' AND status = 0;
 "#;

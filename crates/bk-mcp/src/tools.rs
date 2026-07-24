@@ -264,6 +264,14 @@ pub fn talon_insert_exchange(engine: &Engine, args: Value) -> Result<Value, McpE
         }
     }
 
+    // v0.6 P2 #6: extract the denormalized fields
+    // from the local `request` and `response` so the
+    // inserted row carries the right values (the
+    // `insert` path will overwrite them anyway, but
+    // we keep the in-memory struct consistent for
+    // the `ExchangeInserted` event).
+    let method = request.method.as_str().to_owned();
+    let status = response.as_ref().map(|r| r.status).unwrap_or(0);
     let ex = bk_core::HttpExchange {
         meta: bk_core::ExchangeMeta {
             id: ExchangeId::new(),
@@ -274,6 +282,9 @@ pub fn talon_insert_exchange(engine: &Engine, args: Value) -> Result<Value, McpE
             scope_state: bk_core::ScopeState::InScope,
             notes: String::new(),
             starred: false,
+            method,
+            status,
+            tags: Vec::new(),
         },
         request,
         response,
