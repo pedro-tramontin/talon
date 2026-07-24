@@ -32,6 +32,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  exchangeStore,
   useExchangeStore,
   useFilteredExchanges,
 } from "../state/exchange";
@@ -239,6 +240,29 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
     };
   }, [filterInput, setFilter]);
 
+  // v0.7 P3 #9b (2026-07-24): restore the last-known
+  // scroll offset on mount so re-opening the rail (e.g.
+  // after closing and re-opening a project) lands the user
+  // where they left off. The store has held a
+  // `scrollPosition` field since v0.5, but nothing read or
+  // wrote it in production code until this PR.
+  //
+  // Mount-only — we don't want to re-scroll on every list
+  // mutation. The `scrollPosition` from the store is the
+  // only input; subsequent scrolls write to the store
+  // (via the `onScroll` handler on the scrollable <div>
+  // below), they do not re-trigger this effect.
+  //
+  // The `> 0` guard skips the no-op 0 default (the initial
+  // state). Without it we'd call `scrollToOffset(0)` on
+  // every mount, which is harmless but noisy.
+  useEffect(() => {
+    const saved = exchangeStore.getState().scrollPosition;
+    if (saved > 0) {
+      virtualizer.scrollToOffset(saved, { behavior: "auto" });
+    }
+  }, []);
+
   return (
     <div
       data-testid="exchange-list"
@@ -365,6 +389,18 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
         ref={parentRef}
         data-testid="exchange-list-scroll"
         className="flex-1 overflow-auto"
+        onScroll={(e) => {
+          // v0.7 P3 #9b (2026-07-24): persist the
+          // current scroll offset to the store on every
+          // scroll. The mount-restore effect above reads
+          // this value on the next mount. No throttle —
+          // React's synthetic onScroll is already
+          // rate-limited at the event-system level and
+          // `setScrollPosition` does a single shallow
+          // zustand `set()`.
+          const pos = (e.target as HTMLDivElement).scrollTop;
+          exchangeStore.getState().setScrollPosition(pos);
+        }}
       >
         {filtered.length === 0 ? (
           <p
