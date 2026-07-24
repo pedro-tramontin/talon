@@ -33,6 +33,7 @@ import { exchangeStore } from "../state/exchange";
 import { getWireClient } from "../lib/ws";
 import { ExchangeDetail } from "../components/ExchangeDetail";
 import { ExchangeList } from "../components/ExchangeList";
+import { ProxyControl } from "../components/ProxyControl";
 import { RightRail } from "../components/RightRail";
 import { ReplayView } from "../components/ReplayView";
 import { ScopeRuleEditor } from "../components/ScopeRuleEditor";
@@ -287,6 +288,14 @@ export function Capture() {
         style={{ height: `${TOP_BAR_PX}px` }}
       >
         <ProjectDropdown />
+        {/* v0.5+ post-batch gap-fix (2026-07-24, P0 #1):
+         * the MITM proxy control. Sits at the right end of
+         * the top bar (`ml-auto` inside the component) so
+         * the project dropdown keeps its left-aligned
+         * position. The control is a 2-state widget
+         * (start/stop) + a status pill + a `rulesActive`
+         * badge (per the Phase 6 §6 open item). */}
+        <ProxyControl />
       </header>
       <div className="flex flex-1 overflow-hidden">
         <ExchangeLeftRail />
