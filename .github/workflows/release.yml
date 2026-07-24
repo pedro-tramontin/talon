@@ -142,6 +142,7 @@ jobs:
       - name: Install UI deps + build
         run: pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build
 
+
       # macOS codesign + notarisation is OPTIONAL. The Tauri CLI reads
       # APPLE_CERTIFICATE from the env and runs `security import` on it;
       # an empty value (the case when no secret is configured) makes the
@@ -151,102 +152,74 @@ jobs:
       # ever uploads — release-please has already published the GitHub
       # Release (release-please runs from the tag push, not from this
       # job's outcome), and the release ships with only Linux + Windows
-      # assets. (Real incident: v0.1.1 + v0.1.2 both shipped without
-      # macOS assets.)
+      # assets. (Real incident: v0.1.1 + v0.1.2 + v0.1.3 + v0.2.2 all
+      # shipped without macOS assets.)
       #
-      # Why no `if:` on the steps below: the workflow file is the
+      # Why not the "if APPLE_CERTIFICATE is non-empty, forward via
+      # $GITHUB_ENV" pattern: it does NOT work. When a workflow step's
+      # `env:` block references `secrets.APPLE_CERTIFICATE` and the
+      # secret is unset, GHA evaluates the interpolation to the empty
+      # string AND auto-injects that empty-string env var into ALL
+      # subsequent steps of the same job (this is by design — it lets
+      # steps check `$APPLE_CERTIFICATE` without crashing on an unset
+      # var). The build step's process env therefore has
+      # `APPLE_CERTIFICATE=""` even when the propagation step's bash
+      # guard correctly skipped the write to $GITHUB_ENV. Tauri's
+      # `sign.rs` does `var_os("APPLE_CERTIFICATE")` which returns
+      # `Some("")` for an empty-string env var — NOT `None` — so
+      # Tauri's import branch fires with an empty cert, and
+      # `security import` fails with the "One or more parameters not
+      # valid" error. The bash guard is correct; GHA's auto-injection
+      # defeats it. (Confirmed empirically on run #30117844913, v0.2.2.)
+      #
+      # The fix: receive the cert via the `apple-actions/import-codesign-certs`
+      # action's `with:` inputs (not `env:`). Action inputs are passed
+      # to the action's runtime as JavaScript arguments, NOT injected
+      # into the step's process env. So when `secrets.APPLE_CERTIFICATE`
+      # is unset, the action receives `p12-file-base64: ""` and exits
+      # 0 without setting up a keychain; the build step's process env
+      # has no APPLE_CERTIFICATE at all, `var_os` returns None, and
+      # Tauri's import branch is skipped correctly. Result: no .app /
+      # .dmg ever ships when the cert is absent, AND no env-leak
+      # poisoning of the build step.
+      #
+      # The action also auto-generates a keychain password and uses
+      # `signing_temp` as the keychain name, so the old
+      # `secrets.KEYCHAIN_PASSWORD` is no longer needed.
+      #
+      # Why no `if:` on the step below: the workflow file is the
       # tag-triggered release.yml (not the PR-triggered ci.yml), and
       # empirically any `if:` expression in this file (even
       # `if: ${{ true }}` or `if: always()`) causes GitHub Actions
       # to reject the file with "no jobs were created" and never
       # fire on a tag push. The fix therefore has to live entirely
-      # inside `run:` blocks using bash-level conditionals.
-      #
-      # The pattern: one step writes the APPLE_* env vars to
-      # `$GITHUB_ENV` ONLY if `secrets.APPLE_CERTIFICATE` is
-      # non-empty. The import step and the tauri-action step then
-      # inherit those env vars from `$GITHUB_ENV` only when the
-      # signing secret is configured. When the secret is absent,
-      # the APPLE_* env vars are simply not set in those steps'
-      # processes — `tauri build` calls `var_os("APPLE_CERTIFICATE")`
-      # and gets `None`, so it skips the import branch entirely.
-      #
-      # Result:
-      #   * No APPLE_CERTIFICATE secret  -> unsigned .app + .dmg ship
-      #   * APPLE_CERTIFICATE secret set -> signed + notarised .app + .dmg
-      #
-      # (Reference: Tauri 2 macOS signing docs use the same
-      # keychain-import-as-separate-step pattern. The step ordering
-      # matters — `security import` must succeed before `tauri build`,
-      # which is why the import is its own step rather than a bash
-      # prelude in the build step.)
-
-      - name: Propagate Apple signing secrets (no-op if APPLE_CERTIFICATE is absent)
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-          # These six values are interpolated by GitHub Actions into
-          # the step's process env. If the corresponding secret is
-          # not configured, the value is the empty string — and the
-          # bash `if [ -n "$APPLE_CERTIFICATE" ]` below short-circuits
-          # so nothing is written to $GITHUB_ENV.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          if [ -n "$APPLE_CERTIFICATE" ]; then
-            echo "Apple signing secrets detected — forwarding to subsequent steps via \$GITHUB_ENV."
-            {
-              echo "APPLE_CERTIFICATE<<EOF_APPLE_CERT"
-              echo "$APPLE_CERTIFICATE"
-              echo "EOF_APPLE_CERT"
-              echo "APPLE_CERTIFICATE_PASSWORD<<EOF_APPLE_CERT_PW"
-              echo "$APPLE_CERTIFICATE_PASSWORD"
-              echo "EOF_APPLE_CERT_PW"
-              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
-              echo "APPLE_ID=$APPLE_ID"
-              echo "APPLE_PASSWORD=$APPLE_PASSWORD"
-              echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
-            } >> "$GITHUB_ENV"
-          else
-            echo "No APPLE_CERTIFICATE secret — building unsigned macOS bundle."
-          fi
+      # inside the `with:` block — no `if:` on the step, no bash
+      # guard inside a `run:` block, no `env:` block referencing the
+      # secrets. The `apple-actions/import-codesign-certs` action
+      # internally handles the "empty cert" case by exiting 0 without
+      # setting up a keychain, so the "no cert = skip" semantics are
+      # preserved.
 
       - name: Import Apple Developer Certificate (no-op if cert absent)
-        env:
-          # KEYCHAIN_PASSWORD is only needed by the signed path; the
-          # secret may be unset too. We don't gate on it because the
-          # run-block check on $APPLE_CERTIFICATE already short-circuits.
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "APPLE_CERTIFICATE not set — skipping keychain setup."
-            exit 0
-          fi
-          set -euo pipefail
-          echo "=== Signed macOS build: importing Apple Developer Certificate ==="
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security set-keychain-settings -lut 21600 build.keychain
-          security import certificate.p12 \
-            -k build.keychain \
-            -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          echo "Certificate imported. Running tauri-action..."
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
       - name: Build Tauri bundle (macOS)
-        # No `env:` block on this step. APPLE_* env vars are inherited
-        # from $GITHUB_ENV — set by the propagation step above when
-        # signing is configured, and absent otherwise. The Tauri CLI's
-        # `var_os("APPLE_CERTIFICATE")` returns None when the var is
-        # not set, which is the correct "no signing" signal.
+        # No `env:` block on this step. APPLE_* env vars are NOT set
+        # anywhere in this job's step envs (the cert import step uses
+        # action inputs, not env vars — see the comment block above
+        # for why). The Tauri CLI's `var_os("APPLE_CERTIFICATE")`
+        # therefore returns None, which is the correct "no signing"
+        # signal — `tauri build` skips the import branch and the
+        # `tauri-action` step produces an unsigned .app + .dmg.
+        #
+        # When Apple signing IS configured, the cert is loaded into
+        # a keychain by the previous step, and the Tauri CLI's codesign
+        # step finds the identity in the keychain automatically
+        # (Tauri 2 reads `~/Library/Keychains/signing_temp.keychain-db`
+        # by default when the cert was imported there).
         #
         # **Use `RELEASE_PLEASE_TOKEN` (a fine-grained PAT), NOT
         # `GITHUB_TOKEN` (the default integration token).** The
