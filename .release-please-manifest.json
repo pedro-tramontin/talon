@@ -1,10 +1,10 @@
 {
-  "crates/bk-core": "0.2.2",
-  "crates/bk-store": "0.2.2",
-  "crates/bk-engine": "0.2.2",
-  "crates/bk-proxy": "0.2.2",
-  "crates/bk-mcp": "0.2.2",
-  "crates/bk-agent": "0.2.2",
-  "crates/bk-events": "0.2.2",
-  "app": "0.2.2"
+  "crates/bk-core": "0.2.3",
+  "crates/bk-store": "0.2.3",
+  "crates/bk-engine": "0.2.3",
+  "crates/bk-proxy": "0.2.3",
+  "crates/bk-mcp": "0.2.3",
+  "crates/bk-agent": "0.2.3",
+  "crates/bk-events": "0.2.3",
+  "app": "0.2.3"
 }
