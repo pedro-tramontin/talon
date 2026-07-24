@@ -25,7 +25,6 @@
 // event. The right-rail reads from the cache; per-click
 // `getExchange` round-trips are eliminated for any
 // exchange the engine has already announced.
-
 import { useEffect } from "react";
 import { useProjectStore } from "../state/project";
 import { useUiStore } from "../state/ui";
@@ -42,6 +41,7 @@ import type {
   ExchangeSummary,
 } from "../types/domain";
 import type { ExchangeId, ProjectId } from "../types/ids";
+import { closeProject, listExchanges } from "../api";
 
 /**
  * Subscribe to the wire bus's `engine_event` channel and
@@ -103,6 +103,69 @@ function useEngineEventHandler() {
   }, []);
 }
 
+/**
+ * Seed the exchange list when the active project changes.
+ *
+ * v0.5+ post-batch gap-fix P1 #2 (2026-07-24): the
+ * `engine_event` wire-bus handler in `useEngineEventHandler`
+ * only prepends NEW exchanges from the proxy. The initial
+ * list of existing exchanges is never seeded from disk, so
+ * reopening a project shows an empty list until the proxy
+ * starts pushing events. This hook calls `listExchanges`
+ * (Tauri command) on every `activeProjectId` change and
+ * seeds the exchange store from the first page.
+ *
+ * The handler must RESET on project switch (clear + reseed,
+ * not append). The existing wire-bus handler continues to
+ * `unshiftExchange` new events after the seed, so the
+ * combined pipeline is "seed once on switch, prepend new
+ * events as they arrive".
+ *
+ * Defensive: a `null` project id clears the list (the user
+ * has chosen `— None —`); an IPC error is logged but
+ * non-fatal (the wire-bus path still works for any new
+ * events the engine pushes).
+ */
+function useListExchangesOnProjectSwitch() {
+  const activeProjectId = useProjectStore((s) => s.activeProjectId);
+  useEffect(() => {
+    if (!activeProjectId) {
+      // No active project: clear the list (the user
+      // explicitly chose `— None —` or the app loaded
+      // without a default project). We also clear
+      // `selectedId` so the detail view doesn't show
+      // stale data from a previously-active project.
+      exchangeStore.getState().setExchanges([]);
+      exchangeStore.getState().setSelectedId(null);
+      return;
+    }
+    let cancelled = false;
+    void listExchanges(activeProjectId)
+      .then((page) => {
+        if (cancelled) return;
+        // Reset + seed. The wire-bus handler will prepend
+        // any new events after this point.
+        // The DTO's `items` field is the canonical list
+        // (see `ExchangeListPage` in `types/domain.ts`).
+        exchangeStore.getState().setExchanges(page.items);
+      })
+      .catch((e) => {
+        // Non-fatal: the engine query failed (e.g. the
+        // project's DB is corrupt). The wire-bus path
+        // still works for any new events.
+        if (!cancelled) {
+          console.error(
+            "useListExchangesOnProjectSwitch: listExchanges failed:",
+            e,
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectId]);
+}
+
 /** Width of the left rail in px. Pinned at 240 to match the
  * Tailwind `w-60` class. The Capture.test.tsx test asserts
  * this against the rendered DOM. */
@@ -127,6 +190,7 @@ function ProjectDropdown() {
   const projects = useProjectStore((s) => s.projects);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const setActiveProject = useProjectStore((s) => s.setActiveProject);
+  const removeProject = useProjectStore((s) => s.removeProject);
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
   const setNewProjectModalOpen = useUiStore((s) => s.setNewProjectModalOpen);
 
@@ -136,6 +200,41 @@ function ProjectDropdown() {
   // previously-selected project (so cancelling the
   // modal returns to the same selection).
   const NEW_SENTINEL = "__new__";
+
+  // v0.5+ post-batch gap-fix P1 #3 (2026-07-24):
+  // close-project button. Clicking it pops a `window.confirm`
+  // (the cheapest "are you sure" affordance; the v0.1
+  // design does not have a generic modal-confirm
+  // component — the `ConfirmDialog.tsx` is purpose-built
+  // for the agent-write-tool path with its own state
+  // machine). On confirm: `closeProject(id)` (Tauri
+  // command — drops the project's engine state + DB
+  // connection) + `projectStore.removeProject(id)`
+  // (Zustand action — drops the project from the
+  // dropdown's `projects` list; if the closed project
+  // was active, the store's `activeProjectId` resets
+  // to `null` per the `removeProject` action's
+  // contract). The active project reverts to
+  // `— None —` as a result.
+  function handleCloseProject() {
+    if (!activeProjectId) return;
+    const project = projects.find((p) => p.id === activeProjectId);
+    const name = project?.name ?? "this project";
+    // The `window.confirm` is a synchronous browser API;
+    // it blocks the JS event loop until the user
+    // responds. In a Tauri webview this still works
+    // (the WebView2 / WKWebView provides a native
+    // confirm dialog). A v0.5+ follow-up can swap this
+    // for a styled `ConfirmDialog` modal that matches
+    // the rest of the app's chrome.
+    const ok = window.confirm(
+      `Close project "${name}"? This will close the engine state and disconnect the project's database. The capture history on disk is NOT deleted.`,
+    );
+    if (!ok) return;
+    void closeProject(activeProjectId).then(() => {
+      removeProject(activeProjectId);
+    });
+  }
 
   return (
     <div className="flex items-center gap-2">
@@ -190,6 +289,26 @@ function ProjectDropdown() {
         aria-label="New project"
       >
         + New
+      </button>
+      {/* v0.5+ post-batch gap-fix P1 #3 (2026-07-24):
+       * the "× Close" button. Disabled when no project
+       * is active (the user has chosen `— None —`).
+       * Clicking it pops a `window.confirm`; on confirm
+       * the project is closed on the engine side and
+       * removed from the dropdown. The `closeProject`
+       * Tauri command + `removeProject` Zustand action
+       * are the canonical close-path pair (both already
+       * on `main`; the only missing piece was the
+       * affordance). */}
+      <button
+        data-testid="capture-close-project-button"
+        onClick={handleCloseProject}
+        disabled={!activeProjectId}
+        className="rounded border border-slate-700 bg-transparent px-2 py-1 text-xs text-slate-300 hover:border-red-500 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+        aria-label="Close active project"
+        title="Close the active project (drops engine state; capture history on disk is preserved)"
+      >
+        × Close
       </button>
       {/* Phase 6 §6.7: the Settings button opens the modal that
        * hosts the M&R editor. Lives in the top bar per the
@@ -280,6 +399,12 @@ export function Capture() {
   // purpose is the side effect of subscribing on mount
   // and unsubscribing on unmount.
   useEngineEventHandler();
+  // v0.5+ post-batch gap-fix P1 #2 (2026-07-24): seed
+  // the exchange list from disk when the active project
+  // changes. The wire-bus handler above only prepends
+  // NEW events; this hook is what makes reopening a
+  // project show its existing captures.
+  useListExchangesOnProjectSwitch();
   return (
     <div className="flex h-full w-full flex-col">
       <header

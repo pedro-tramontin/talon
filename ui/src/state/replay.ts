@@ -94,6 +94,19 @@ export interface ReplayTab {
    * by `sendReplay` to persist the new exchange in the
    * right project. */
   projectId: ProjectId | null;
+  /** v0.5+ post-batch gap-fix P1 #4 (2026-07-24): the
+   * `body_truncated` flag from `open_replay_tab` /
+   * `openReplayTab`. The 1 MB response body cap
+   * (`app/src/commands/replay.rs:78-89`) sets this to
+   * `true` when the engine returned a truncated body.
+   * The `ReplayRequestEditor` reads this and renders
+   * a "Response body truncated to 1 MB" notice in the
+   * response viewer. The flag is `false` (the default)
+   * for tabs that came from the in-memory LRU cache
+   * (which never holds truncated bodies — the cache
+   * stores the full `ExchangeDetail` from the engine
+   * event, not the 1 MB-cap'd replay descriptor). */
+  bodyTruncated: boolean;
 }
 
 /** Top-level store shape. */
@@ -124,6 +137,13 @@ export type ReplayStore = {
       request: ExchangeRequest;
       response: ExchangeResponse | null;
       projectId?: ProjectId | null;
+      /** v0.5+ post-batch gap-fix P1 #4 (2026-07-24):
+       * the `body_truncated` flag from
+       * `open_replay_tab` / `openReplayTab`. Defaults
+       * to `false` if not provided (the cache-hit path
+       * doesn't have the flag, since the LRU never
+       * holds truncated bodies). */
+      bodyTruncated?: boolean;
     },
   ) => string;
   /** Close a tab. If the closed tab was active, sets
@@ -184,6 +204,14 @@ function createReplayStore() {
         history: [],
         sending: false,
         projectId: source.projectId ?? null,
+        // v0.5+ post-batch gap-fix P1 #4 (2026-07-24):
+        // the `body_truncated` flag from
+        // `openReplayTab`. The cache-hit path (the
+        // existing v0.1 code) didn't have a way to
+        // surface this; the new `open_replay_tab` IPC
+        // round-trip populates the flag explicitly. The
+        // default is `false` (cache-hit path, full body).
+        bodyTruncated: source.bodyTruncated ?? false,
       };
       set((s) => ({ tabs: [...s.tabs, tab], activeTabId: id }));
 

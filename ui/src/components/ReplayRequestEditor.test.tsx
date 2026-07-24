@@ -358,4 +358,41 @@ describe("ReplayRequestEditor", () => {
     ) as HTMLTextAreaElement;
     expect(headers.value).toContain("x-fork: 1");
   });
+
+  // v0.5+ post-batch gap-fix P1 #4 (2026-07-24):
+  // when the tab was opened from a `body_truncated: true`
+  // `openReplayTab` descriptor, the editor renders a
+  // "Response body truncated to 1 MB" notice at the top.
+  it("renders the body-truncated notice when the tab has bodyTruncated=true", () => {
+    const id = replayStore.getState().openTab({
+      exchangeId: newExchangeId(),
+      summary: "GET /path",
+      request: REQ,
+      response: null,
+      projectId: projectStore.getState().activeProjectId!,
+      bodyTruncated: true,
+    });
+    render(<ReplayRequestEditor tabId={id} />);
+    expect(
+      screen.getByTestId("replay-request-editor-body-truncated-notice"),
+    ).toBeInTheDocument();
+  });
+
+  // v0.5+ post-batch gap-fix P1 #4: the notice is
+  // HIDDEN when the tab has bodyTruncated=false (the
+  // default for cache-hit openTab calls).
+  it("does not render the body-truncated notice when bodyTruncated=false", () => {
+    const id = replayStore.getState().openTab({
+      exchangeId: newExchangeId(),
+      summary: "GET /path",
+      request: REQ,
+      response: null,
+      projectId: projectStore.getState().activeProjectId!,
+      bodyTruncated: false,
+    });
+    render(<ReplayRequestEditor tabId={id} />);
+    expect(
+      screen.queryByTestId("replay-request-editor-body-truncated-notice"),
+    ).toBeNull();
+  });
 });

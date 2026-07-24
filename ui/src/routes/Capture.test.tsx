@@ -6,13 +6,33 @@
 // right-rail tabs. We assert the column widths and the
 // placeholder empty states here.
 
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Capture, LEFT_RAIL_PX, RIGHT_RAIL_PX } from "./Capture";
 import { projectStore } from "../state/project";
 import { uiStore } from "../state/ui";
+import { exchangeStore } from "../state/exchange";
 import { asProjectId } from "../types/ids";
-import type { ProjectMeta } from "../types/domain";
+import type { ExchangeSummary, ProjectMeta } from "../types/domain";
+import { closeProject, listExchanges } from "../api";
+
+// v0.5+ post-batch gap-fix P1 #2 (2026-07-24): the
+// `useListExchangesOnProjectSwitch` hook calls
+// `listExchanges` on `activeProjectId` change. The
+// test mock returns an empty list by default; each
+// test overrides this via `mockResolvedValueOnce` if
+// it needs a specific seed.
+vi.mock("../api", async () => {
+  const actual = await vi.importActual<typeof import("../api")>("../api");
+  return {
+    ...actual,
+    listExchanges: vi.fn(),
+    closeProject: vi.fn(),
+  };
+});
+
+const listExchangesMock = vi.mocked(listExchanges);
+const closeProjectMock = vi.mocked(closeProject);
 
 function makeProject(name: string): ProjectMeta {
   return {
@@ -20,6 +40,19 @@ function makeProject(name: string): ProjectMeta {
     name,
     target_host: "acme.example.com",
     db_filename: `${name}.db`,
+  };
+}
+
+function makeSummary(idx: number, summary: string): ExchangeSummary {
+  return {
+    id: asProjectId(`00000000-0000-0000-0000-${String(idx).padStart(12, "0")}`) as never,
+    project_id: asProjectId("00000000-0000-0000-0000-000000000001"),
+    timestamp: new Date(2026, 6, 24, 12, idx).toISOString(),
+    duration_ns: 0,
+    summary,
+    scope_state: "in_scope",
+    notes: "",
+    starred: false,
   };
 }
 
@@ -34,9 +67,32 @@ function resetUiStore() {
   });
 }
 
+function resetExchangeStore() {
+  exchangeStore.setState({
+    exchanges: [],
+    selectedId: null,
+    filter: { text: "", status: "any", method: "any", tag: "" },
+  });
+}
+
 beforeEach(() => {
   resetProjectStore();
   resetUiStore();
+  resetExchangeStore();
+  listExchangesMock.mockReset();
+  closeProjectMock.mockReset();
+  // Default: `listExchanges` returns an empty page.
+  listExchangesMock.mockResolvedValue({
+    items: [],
+    next_cursor: null,
+    total_in_page: 0,
+  });
+  // Default: `closeProject` resolves to undefined.
+  closeProjectMock.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
 });
 
 describe("Capture route", () => {
@@ -198,5 +254,146 @@ describe("Capture route", () => {
     expect(uiStore.getState().newProjectModalOpen).toBe(true);
     fireEvent.click(screen.getByTestId("capture-settings-button"));
     expect(uiStore.getState().settingsOpen).toBe(true);
+  });
+
+  // v0.5+ post-batch gap-fix P1 #2 (2026-07-24): the
+  // `useListExchangesOnProjectSwitch` hook seeds the
+  // exchange store from `listExchanges` when the
+  // active project changes. The mock returns 2
+  // exchanges; we assert the store gets them.
+  it("on project open, listExchanges seeds the exchange store", async () => {
+    const project = makeProject("alpha");
+    listExchangesMock.mockResolvedValueOnce({
+      items: [makeSummary(1, "GET /v1/foo"), makeSummary(2, "POST /v1/bar")],
+      next_cursor: null,
+      total_in_page: 2,
+    });
+    projectStore.setState({
+      projects: [project],
+      activeProjectId: project.id,
+    });
+    render(<Capture />);
+    await waitFor(() => {
+      expect(listExchangesMock).toHaveBeenCalledWith(project.id);
+    });
+    await waitFor(() => {
+      expect(exchangeStore.getState().exchanges.length).toBe(2);
+    });
+    expect(exchangeStore.getState().exchanges.map((e) => e.summary)).toEqual([
+      "GET /v1/foo",
+      "POST /v1/bar",
+    ]);
+  });
+
+  // v0.5+ post-batch gap-fix P1 #2: switching to a
+  // different project replaces the seed (RESET, not
+  // append). The first project had 2 exchanges; the
+  // second has 1. After switching, the store should
+  // hold only the second project's 1 exchange.
+  it("on project switch, listExchanges RESETS the exchange store (not appends)", async () => {
+    const a = makeProject("alpha");
+    const b = makeProject("beta");
+    listExchangesMock
+      .mockResolvedValueOnce({
+        items: [makeSummary(1, "GET /alpha/1"), makeSummary(2, "GET /alpha/2")],
+        next_cursor: null,
+        total_in_page: 2,
+      })
+      .mockResolvedValueOnce({
+        items: [makeSummary(3, "GET /beta/1")],
+        next_cursor: null,
+        total_in_page: 1,
+      });
+    projectStore.setState({ projects: [a, b], activeProjectId: a.id });
+    render(<Capture />);
+    await waitFor(() => {
+      expect(exchangeStore.getState().exchanges.length).toBe(2);
+    });
+    // Switch to beta
+    fireEvent.change(screen.getByTestId("capture-project-select"), {
+      target: { value: b.id },
+    });
+    await waitFor(() => {
+      expect(listExchangesMock).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(exchangeStore.getState().exchanges.length).toBe(1);
+    });
+    expect(exchangeStore.getState().exchanges[0]?.summary).toBe("GET /beta/1");
+  });
+
+  // v0.5+ post-batch gap-fix P1 #2: switching to
+  // `— None —` clears the exchange list.
+  it("switching to '— None —' clears the exchange store", async () => {
+    const a = makeProject("alpha");
+    listExchangesMock.mockResolvedValueOnce({
+      items: [makeSummary(1, "GET /alpha/1")],
+      next_cursor: null,
+      total_in_page: 1,
+    });
+    projectStore.setState({ projects: [a], activeProjectId: a.id });
+    render(<Capture />);
+    await waitFor(() => {
+      expect(exchangeStore.getState().exchanges.length).toBe(1);
+    });
+    // Switch to None
+    fireEvent.change(screen.getByTestId("capture-project-select"), {
+      target: { value: "" },
+    });
+    await waitFor(() => {
+      expect(exchangeStore.getState().exchanges.length).toBe(0);
+    });
+  });
+
+  // v0.5+ post-batch gap-fix P1 #3 (2026-07-24):
+  // the close-project button. Disabled when no
+  // project is active; enabled when a project is
+  // active.
+  it("the '× Close' button is disabled when no project is active", () => {
+    render(<Capture />);
+    const button = screen.getByTestId("capture-close-project-button");
+    expect(button).toBeDisabled();
+  });
+
+  it("the '× Close' button is enabled when a project is active", () => {
+    const a = makeProject("alpha");
+    projectStore.setState({ projects: [a], activeProjectId: a.id });
+    render(<Capture />);
+    const button = screen.getByTestId("capture-close-project-button");
+    expect(button).not.toBeDisabled();
+  });
+
+  it("clicking '× Close' with a confirmed dialog calls closeProject + removeProject", async () => {
+    const a = makeProject("alpha");
+    projectStore.setState({ projects: [a], activeProjectId: a.id });
+    // Stub `window.confirm` to return `true` (user confirmed).
+    const confirmSpy = vi
+      .spyOn(window, "confirm")
+      .mockReturnValue(true);
+    render(<Capture />);
+    fireEvent.click(screen.getByTestId("capture-close-project-button"));
+    await waitFor(() => {
+      expect(closeProjectMock).toHaveBeenCalledWith(a.id);
+    });
+    await waitFor(() => {
+      // The `removeProject` action clears
+      // `activeProjectId` per its contract.
+      expect(projectStore.getState().activeProjectId).toBeNull();
+    });
+    expect(projectStore.getState().projects).toEqual([]);
+    confirmSpy.mockRestore();
+  });
+
+  it("clicking '× Close' with a declined dialog does NOT call closeProject", () => {
+    const a = makeProject("alpha");
+    projectStore.setState({ projects: [a], activeProjectId: a.id });
+    const confirmSpy = vi
+      .spyOn(window, "confirm")
+      .mockReturnValue(false);
+    render(<Capture />);
+    fireEvent.click(screen.getByTestId("capture-close-project-button"));
+    expect(closeProjectMock).not.toHaveBeenCalled();
+    expect(projectStore.getState().activeProjectId).toBe(a.id);
+    confirmSpy.mockRestore();
   });
 });
