@@ -253,6 +253,25 @@ export function ExchangeList(_props: ExchangeListProps = {}) {
           placeholder="summary…"
           className="w-full rounded border border-slate-700 bg-bg-base px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-accent focus:outline-none"
         />
+        {/* v0.5+ post-batch gap-fix P2 #6 (2026-07-24):
+         * the 3 new filter dropdowns (status, method, tag)
+         * are DEFERRED to a v0.5+ follow-up. The audit's
+         * spec assumed `ExchangeSummary.status`,
+         * `ExchangeSummary.method`, and `ExchangeSummary.tag`
+         * fields exist, but they do NOT — the
+         * `ExchangeSummary` DTO
+         * (`app/src/commands/core.rs:76-86`) only carries
+         * `id`, `project_id`, `timestamp`, `duration_ns`,
+         * `summary`, `scope_state`, `starred`, `notes`. The
+         * predicate at `ui/src/state/exchange.ts:249-261`
+         * can be extended to honor `status`/`method`/`tag`,
+         * but the source data is not on the summary — it
+         * would need a Rust-side change to `ExchangeSummary`
+         * (add the 3 fields + populate them in
+         * `From<ExchangeMeta>`). See the §5b deviation
+         * entry in the per-phase `state.md`. The `text`
+         * filter (the only one with source data) still
+         * works; the new dropdowns are a future PR. */}
         <label
           htmlFor="exchange-list-fts"
           className="mt-3 mb-1 block text-xs uppercase tracking-wide text-slate-400"
