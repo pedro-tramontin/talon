@@ -1,6 +1,6 @@
 [package]
 name = "bk-agent"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 license.workspace = true
 description = "Internal LLM agent loop that drives bk-engine via OpenAI-compatible tool calls"

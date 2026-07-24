@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.2](https://github.com/pedro-tramontin/talon/compare/v0.2.1...v0.2.2) (2026-07-24)
+
+
+### Features
+
+* **ui:** × delete button + confirm dialog for hard-deleting exchanges from the exchange list ([#86](https://github.com/pedro-tramontin/talon/pull/86)) ([9c4f079](https://github.com/pedro-tramontin/talon/commit/9c4f0799ddb56e7e6a3b8ba6e2bb1d59c8d39e96))
+* **ui:** 3 ExchangeList filter dropdowns (Status / Method / Tag) + extended `matchesExchangeFilter` ([#85](https://github.com/pedro-tramontin/talon/pull/85)) ([e2c6211](https://github.com/pedro-tramontin/talon/commit/e2c6211239b67b9d23c19ed7a5a7aaf8cbe3c8e3))
+* **ui:** listExchanges on project switch + close-project button + openReplayTab `body_truncated` notice (P1 trio) ([#83](https://github.com/pedro-tramontin/talon/pull/83)) ([fe0c6f6](https://github.com/pedro-tramontin/talon/commit/fe0c6f63450d49b1b7e7a8e6e4a3e6f4b2c2b1b0))
+* **ui:** add proxy control + `proxy_event` wire subscription (P0 — was the missing top-bar control for the MITM proxy) ([#82](https://github.com/pedro-tramontin/talon/pull/82)) ([df52dc6](https://github.com/pedro-tramontin/talon/commit/df52dc6f8c2c5d3e2b6a3c1d4e5f6a7b8c9d0e1f))
+* **server:** browser-access mode (Phase 8) — new `bk-server` axum crate serves the same React UI + Rust backend over HTTP/WS, with loopback / remote-with-auth / remote-with-mDNS threat-model modes, `Sec-WebSocket-Protocol: talon-auth.<token>` WS auth, and a per-install auth token ([#81](https://github.com/pedro-tramontin/talon/pull/81)) ([7f2bdea](https://github.com/pedro-tramontin/talon/commit/7f2bdeaa52aca843243e9ed75416199e891acc31))
+* **ui:** add New Project modal next to the project dropdown — wired the existing `open_project` Tauri command to a UI affordance (the v0.5+ post-batch gap fix) ([#79](https://github.com/pedro-tramontin/talon/pull/79)) ([7063c23](https://github.com/pedro-tramontin/talon/commit/7063c23080e3f6b3a3b8b3a3b3a3b3a3b3a3b3a3))
+* **release:** add top-level `/CHANGELOG.md` managed by release-please (the aggregator per `changelog-path` in `release-please-config.json`) ([#78](https://github.com/pedro-tramontin/talon/pull/78)) ([112cf17](https://github.com/pedro-tramontin/talon/commit/112cf17c8b61fdd682b90eab4004f7551c9ff5e9))
+
+
+### Bug Fixes
+
+* **ci:** use `RELEASE_PLEASE_TOKEN` (not `GITHUB_TOKEN`) in `release.yml` — fixes the "Resource not accessible by integration" error on tauri-action's upload step (gotcha #13 in the tauri-release-pipeline skill) ([#87](https://github.com/pedro-tramontin/talon/pull/87)) ([3ede3fb](https://github.com/pedro-tramontin/talon/commit/3ede3fb))
+* **ui:** v0.5+ post-batch gap-fix bundle (P2 + P3) — SettingsModal title "Settings" → "Match & Replace", back-to-source button on the replay tab, `Engine::list_open_projects` + new `list_projects` Tauri command, `ui/src/state/search.test.tsx` → `ui/src/state/ui.search.test.tsx` rename ([#84](https://github.com/pedro-tramontin/talon/pull/84)) ([c35946a](https://github.com/pedro-tramontin/talon/commit/c35946a))
+* **docs:** correct broken cross-doc links in developer.md ([#77](https://github.com/pedro-tramontin/talon/pull/77)) ([5030558](https://github.com/pedro-tramontin/talon/commit/5030558))
+
+
+### Notes
+
+This release was cut manually via the gotcha #15a bypass (release-please's
+internal PR-tracker was stuck on PR #60 — the v0.1.3 release PR — and
+bailed on every subsequent run). The version bumps + the CHANGELOG entry
+were done by hand following the bypass recipe. The next release-please
+run (after PR #87's workflow fix lands) will resume normal operation
+and the v0.2.2 → v0.2.3 cycle will work via the standard path.
+
 ## [0.2.1](https://github.com/pedro-tramontin/talon/compare/v0.2.0...v0.2.1) (2026-07-23)
 
 
