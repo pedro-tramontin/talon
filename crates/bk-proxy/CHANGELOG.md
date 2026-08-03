@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.4](https://github.com/pedro-tramontin/talon/compare/v0.2.3...v0.2.4) (2026-08-03)
+
+
+### Features
+
+* **bk-proxy:** §3.1+§3.2 — TCP listener, dynamic root CA, per-host leaf signing ([#16](https://github.com/pedro-tramontin/talon/issues/16)) ([370f3fe](https://github.com/pedro-tramontin/talon/commit/370f3feec4f88dffc9bfe60abc0442df009ea306))
+* **bk-proxy:** §3.3.5 — body streaming + upstream connection pool ([#18](https://github.com/pedro-tramontin/talon/issues/18)) ([f08f35a](https://github.com/pedro-tramontin/talon/commit/f08f35adbb4991484b2ad089b78a6584f80b85c5))
+* **bk-proxy:** §3.5 — HTTP/2 upstream forwarder (ALPN h2 + H1/H2 enum) ([#23](https://github.com/pedro-tramontin/talon/issues/23)) ([ccd1a3f](https://github.com/pedro-tramontin/talon/commit/ccd1a3fc30f193a6f06114a10beb718a64fdfb73))
+* **bk-proxy:** CONNECT intercept, MITM TLS termination, upstream forward ([#17](https://github.com/pedro-tramontin/talon/issues/17)) ([44cce64](https://github.com/pedro-tramontin/talon/commit/44cce6455f075f09312010fb92be79b2d31c3fb2))
+* **replay:** §5.4+§5.5+§5.6 view, request editor, history panel, wire event arm + smoke test ([#64](https://github.com/pedro-tramontin/talon/issues/64)) ([6499afd](https://github.com/pedro-tramontin/talon/commit/6499afd45e8ad4cdeecd0edc58b0f31bffd31d11))
+* **scope:** scope + match & replace engines, Tauri CRUD commands, pipeline shim ([#65](https://github.com/pedro-tramontin/talon/issues/65)) ([b99d1cf](https://github.com/pedro-tramontin/talon/commit/b99d1cf3e794a554eebeffc124efd14c73b499ba))
+* **test:** mock feature PR for release-pipeline smoke test ([#90](https://github.com/pedro-tramontin/talon/issues/90)) ([5b5d7d2](https://github.com/pedro-tramontin/talon/commit/5b5d7d2ce7830445b42f6f208ce78ed59482aa45))
+* **ui:** 3 ExchangeList filter dropdowns (v0.6 P2 [#6](https://github.com/pedro-tramontin/talon/issues/6)) ([#85](https://github.com/pedro-tramontin/talon/issues/85)) ([71275da](https://github.com/pedro-tramontin/talon/commit/71275da7cdcde48bafde5fa95b094dda65a9fbf2))
+
+
+### Bug Fixes
+
+* **bk-proxy:** §3.3.6 — keep PooledConn alive until response body drained ([#20](https://github.com/pedro-tramontin/talon/issues/20)) ([0e07bc6](https://github.com/pedro-tramontin/talon/commit/0e07bc60cc236a23f63007cfb7e88c1b674e1ecd))
+* **ci:** inline Cargo version in each crate (release-please compat) ([#53](https://github.com/pedro-tramontin/talon/issues/53)) ([b87389e](https://github.com/pedro-tramontin/talon/commit/b87389e842da4f13857d72e0538a1f92f7c1827b))
+* **test:** mock fix PR for release-pipeline smoke test ([#91](https://github.com/pedro-tramontin/talon/issues/91)) ([6f56a73](https://github.com/pedro-tramontin/talon/commit/6f56a730c755af2adbe2f00a292b8ba5b30266c0))
+
 ## [0.2.3](https://github.com/pedro-tramontin/talon/compare/v0.2.2...v0.2.3) (2026-07-24)
 
 

@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.4](https://github.com/pedro-tramontin/talon/compare/v0.2.3...v0.2.4) (2026-08-03)
+
+
+### Features
+
+* **app,ui:** wire bk-agent into Tauri shell with confirmation flow ([#29](https://github.com/pedro-tramontin/talon/issues/29)) ([01da955](https://github.com/pedro-tramontin/talon/commit/01da955c6599c0c0e6f69c5db2d4b9742bcc3c84))
+* **app:** engine + proxy wiring in Tauri shell with 6 commands ([#40](https://github.com/pedro-tramontin/talon/issues/40)) ([d4c5348](https://github.com/pedro-tramontin/talon/commit/d4c53489529fa4819daf2a2c3a5328afb3c6ffcd))
+* **app:** wire engine + proxy event buses through WireEvent fan-in ([#41](https://github.com/pedro-tramontin/talon/issues/41)) ([8f7b61b](https://github.com/pedro-tramontin/talon/commit/8f7b61b686d00a1ce8ce91234c0031b79f808dbc))
+* **bk-events:** WireEvent envelope + fan_in helper + WireClient ([#39](https://github.com/pedro-tramontin/talon/issues/39)) ([e085f0e](https://github.com/pedro-tramontin/talon/commit/e085f0e8ef747b60d69a666215f937dc8957670c))
+* **replay:** Tauri commands (open_replay_tab, send_replay) + ReplayStore + WireEvent::Replay variant ([#63](https://github.com/pedro-tramontin/talon/issues/63)) ([11088b6](https://github.com/pedro-tramontin/talon/commit/11088b62a27ca07b1bf0ac9e9677f69185042418))
+* **scope:** scope + match & replace engines, Tauri CRUD commands, pipeline shim ([#65](https://github.com/pedro-tramontin/talon/issues/65)) ([b99d1cf](https://github.com/pedro-tramontin/talon/commit/b99d1cf3e794a554eebeffc124efd14c73b499ba))
+* **server:** browser-access mode (Phase 8) ([#81](https://github.com/pedro-tramontin/talon/issues/81)) ([80336b6](https://github.com/pedro-tramontin/talon/commit/80336b6fcf438a8d5cc9314142e3c7362972b790))
+* **test:** mock feature PR for release-pipeline smoke test ([#90](https://github.com/pedro-tramontin/talon/issues/90)) ([5b5d7d2](https://github.com/pedro-tramontin/talon/commit/5b5d7d2ce7830445b42f6f208ce78ed59482aa45))
+* **ui,app:** right-rail inspector tabs (4 panels + update_notes Tauri command) ([#45](https://github.com/pedro-tramontin/talon/issues/45)) ([85be231](https://github.com/pedro-tramontin/talon/commit/85be2316bf1605d6681c2fcb02089f0d563a2f9d))
+* **ui,app:** wire FTS5 search to Tauri command + UI ([#46](https://github.com/pedro-tramontin/talon/issues/46)) ([437b85b](https://github.com/pedro-tramontin/talon/commit/437b85b83771b8d93a10d885699ebab3395b9172))
+* **ui:** × delete button + confirm dialog (v0.6 P3 [#9](https://github.com/pedro-tramontin/talon/issues/9), draft) ([#86](https://github.com/pedro-tramontin/talon/issues/86)) ([c3b3ad0](https://github.com/pedro-tramontin/talon/commit/c3b3ad0268ef9abc8e7627cc4c95ac883fa9fe70))
+* **ui:** 3 ExchangeList filter dropdowns (v0.6 P2 [#6](https://github.com/pedro-tramontin/talon/issues/6)) ([#85](https://github.com/pedro-tramontin/talon/issues/85)) ([71275da](https://github.com/pedro-tramontin/talon/commit/71275da7cdcde48bafde5fa95b094dda65a9fbf2))
+* **v0.5+:** wire active-project rules into start_proxy, persist ProjectSettings + replay history ([#73](https://github.com/pedro-tramontin/talon/issues/73)) ([9dfa6f8](https://github.com/pedro-tramontin/talon/commit/9dfa6f81808460c7c61cbcaaf74ce3929e719000))
+* **v0.5:** hex viewer, LCS diff, markdown notes, base64 wire format, type-DELETE confirm, and 3 polish items ([#48](https://github.com/pedro-tramontin/talon/issues/48)) ([0df1793](https://github.com/pedro-tramontin/talon/commit/0df1793bbf12a8d43f5a9440d1ce548e6251afec))
+
+
+### Bug Fixes
+
+* **bk-events:** pass tokio runtime handle to fan_in from sync callers ([#57](https://github.com/pedro-tramontin/talon/issues/57)) ([e5a984d](https://github.com/pedro-tramontin/talon/commit/e5a984d7ceaad10d152b83f048ca0ea38703b465))
+* **ci:** inline Cargo version in each crate (release-please compat) ([#53](https://github.com/pedro-tramontin/talon/issues/53)) ([b87389e](https://github.com/pedro-tramontin/talon/commit/b87389e842da4f13857d72e0538a1f92f7c1827b))
+* **icons:** replace app icon set with v2 Neon Talon design ([#69](https://github.com/pedro-tramontin/talon/issues/69)) ([dd057a6](https://github.com/pedro-tramontin/talon/commit/dd057a6953952edd5323baf8108486daeaab0c97))
+* **test:** mock fix PR for release-pipeline smoke test ([#91](https://github.com/pedro-tramontin/talon/issues/91)) ([6f56a73](https://github.com/pedro-tramontin/talon/commit/6f56a730c755af2adbe2f00a292b8ba5b30266c0))
+* **ui:** v0.5+ post-batch gap-fix (P2 + P3) — SettingsModal rename, back-to-source, list_projects, search.test rename ([#84](https://github.com/pedro-tramontin/talon/issues/84)) ([e133ab4](https://github.com/pedro-tramontin/talon/commit/e133ab4688d93c6b9f4ade8c0492c8bd7338128b))
+* **windows:** set PE subsystem to WINDOWS in release builds ([#59](https://github.com/pedro-tramontin/talon/issues/59)) ([d98643e](https://github.com/pedro-tramontin/talon/commit/d98643eb4eaed1d8617be35c6bd2c4b85140b098))
+
 ## [0.2.3](https://github.com/pedro-tramontin/talon/compare/v0.2.2...v0.2.3) (2026-07-24)
 
 
