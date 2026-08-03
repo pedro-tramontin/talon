@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.4](https://github.com/pedro-tramontin/talon/compare/v0.2.3...v0.2.4) (2026-08-03)
+
+
+### Features
+
+* **bk-events:** WireEvent envelope + fan_in helper + WireClient ([#39](https://github.com/pedro-tramontin/talon/issues/39)) ([e085f0e](https://github.com/pedro-tramontin/talon/commit/e085f0e8ef747b60d69a666215f937dc8957670c))
+* **replay:** Tauri commands (open_replay_tab, send_replay) + ReplayStore + WireEvent::Replay variant ([#63](https://github.com/pedro-tramontin/talon/issues/63)) ([11088b6](https://github.com/pedro-tramontin/talon/commit/11088b62a27ca07b1bf0ac9e9677f69185042418))
+* **test:** mock feature PR for release-pipeline smoke test ([#90](https://github.com/pedro-tramontin/talon/issues/90)) ([5b5d7d2](https://github.com/pedro-tramontin/talon/commit/5b5d7d2ce7830445b42f6f208ce78ed59482aa45))
+
+
+### Bug Fixes
+
+* **bk-events:** pass tokio runtime handle to fan_in from sync callers ([#57](https://github.com/pedro-tramontin/talon/issues/57)) ([e5a984d](https://github.com/pedro-tramontin/talon/commit/e5a984d7ceaad10d152b83f048ca0ea38703b465))
+* **ci:** inline Cargo version in each crate (release-please compat) ([#53](https://github.com/pedro-tramontin/talon/issues/53)) ([b87389e](https://github.com/pedro-tramontin/talon/commit/b87389e842da4f13857d72e0538a1f92f7c1827b))
+* **test:** mock fix PR for release-pipeline smoke test ([#91](https://github.com/pedro-tramontin/talon/issues/91)) ([6f56a73](https://github.com/pedro-tramontin/talon/commit/6f56a730c755af2adbe2f00a292b8ba5b30266c0))
+
 ## [0.2.3](https://github.com/pedro-tramontin/talon/compare/v0.2.2...v0.2.3) (2026-07-24)
 
 
