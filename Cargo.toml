@@ -51,7 +51,7 @@ serde_json = "1.0"
 
 # Error handling
 thiserror = "2.0"
-anyhow = "1.0"
+anyhow = "1.0.104"
 
 # Logging
 tracing = "0.1"
