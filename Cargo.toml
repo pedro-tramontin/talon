@@ -110,7 +110,7 @@ webpki-roots = "1.0"
 
 # HTTP client/server (used by bk-proxy for MITM)
 hyper = { version = "1.5", features = ["server", "client", "http1", "http2"] }
-hyper-util = { version = "0.1", features = ["tokio", "server", "client", "client-legacy", "http1", "http2"] }
+hyper-util = { version = "0.1.20", features = ["tokio", "server", "client", "client-legacy", "http1", "http2"] }
 http-body-util = "0.1"
 http-body = "1.0"
 tower-service = "0.3"
