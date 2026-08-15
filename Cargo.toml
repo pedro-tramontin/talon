@@ -93,7 +93,7 @@ serde_bytes_base64 = "0.1"
 regex = "1.10"
 
 # Connection pool (for bk-store)
-r2d2 = "0.8"
+r2d2 = "0.8.10"
 
 # CA generation (used by bk-proxy for dynamic root + leaf signing)
 rcgen = "0.14"
