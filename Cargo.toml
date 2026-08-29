@@ -96,7 +96,7 @@ regex = "1.10"
 r2d2 = "0.8"
 
 # CA generation (used by bk-proxy for dynamic root + leaf signing)
-rcgen = "0.14"
+rcgen = "0.14.10"
 
 # Config file parsing (used by bk-proxy)
 toml = "1.1"
